@@ -257,11 +257,6 @@ export class WalletService {
           // as savings moves don't change the portfolio-wide avg price.
           entry.totalInvestedPortfolio -= investedReduction;
         }
-
-        // Proportional reduction of received balance if withdrawal exceeds deposited balance
-        if (entry.balance < entry.receivedBalance) {
-          entry.receivedBalance = Math.max(0, entry.balance);
-        }
       }
     }
 
@@ -281,6 +276,20 @@ export class WalletService {
         };
       }
       statsMap[s.assetSymbol].savingsBalance += Number(s.quantity);
+    }
+
+    // Post-process to fix receivedBalance clamping and add total
+    for (const symbol in statsMap) {
+      const entry = statsMap[symbol];
+      const combinedBalance = entry.balance + entry.savingsBalance;
+
+      // Proportional reduction of received balance if total ownership is less than total received
+      // This handles the case where user withdraws/sells tokens they originally received
+      if (combinedBalance < entry.receivedBalance) {
+        entry.receivedBalance = Math.max(0, combinedBalance);
+      }
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      (entry as any).totalBalance = combinedBalance;
     }
 
     return statsMap;
