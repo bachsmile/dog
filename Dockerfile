@@ -3,15 +3,12 @@ FROM node:22-alpine AS builder
 
 WORKDIR /app
 
-# Copy package management files
-COPY package.json yarn.lock* package-lock.json* ./
+# Copy ALL files first (rely on .dockerignore for node_modules/dist)
+COPY . .
 
 # Install dependencies
-RUN if [ -f yarn.lock ]; then yarn install --frozen-lockfile; \
-    else npm ci; fi
-
-# Copy application source
-COPY . .
+RUN if [ -f yarn.lock ]; then yarn install; \
+    else npm install; fi
 
 # Build the application
 RUN npm run build
@@ -21,12 +18,10 @@ FROM node:22-alpine
 
 WORKDIR /app
 
-# Copy package management files for production install
+# Copy package files and install only production deps
 COPY package.json yarn.lock* package-lock.json* ./
-
-# Install only production dependencies
-RUN if [ -f yarn.lock ]; then yarn install --production --frozen-lockfile; \
-    else npm ci --only=production; fi
+RUN if [ -f yarn.lock ]; then yarn install --production; \
+    else npm install --only=production; fi
 
 # Copy build output from builder stage
 COPY --from=builder /app/dist ./dist
