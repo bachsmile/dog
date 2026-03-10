@@ -1,0 +1,25 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Debug NestJS (Launch)",
+      "args": ["start", "--debug", "--watch"],
+      "autoAttachChildProcesses": true,
+      "console": "integratedTerminal",
+      "protocol": "inspector",
+      "runtimeExecutable": "npm",
+      "restart": true,
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "type": "node",
+      "request": "attach",
+      "name": "Attach to NestJS (Port 9229)",
+      "port": 9229,
+      "restart": true,
+      "skipFiles": ["<node_internals>/**"]
+    }
+  ]
+}
