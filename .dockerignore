@@ -4,9 +4,6 @@ dist
 .git
 .gitignore
 README.md
-nest-cli.json
-tsconfig.build.json
-tsconfig.json
 eslint.config.mjs
 test
 *.log
