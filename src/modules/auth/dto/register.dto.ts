@@ -5,4 +5,5 @@ export class RegisterDto {
   password: string;
   displayName?: string;
   role?: Role;
+  status?: 'active' | 'suspended';
 }

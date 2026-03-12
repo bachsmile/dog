@@ -20,10 +20,15 @@ import { WalletModule } from './modules/wallet/wallet.module';
 import { WalletConfig } from './modules/wallet/entities/wallet-config.entity';
 import { WalletTransaction } from './modules/wallet/entities/wallet-transaction.entity';
 import { WalletSavings } from './modules/wallet/entities/wallet-savings.entity';
+import { LawModule } from './modules/law/law.module';
+import { Lawyer } from './modules/law/entities/lawyer.entity';
+import { ChatModule } from './modules/chat/chat.module';
+import { LawChatModule } from './modules/law-chat/law-chat.module';
+import { LawChatRoom } from './modules/law-chat/entities/law-chat-room.entity';
+import { LawAppointment } from './modules/law/entities/law-appointment.entity';
 
 @Module({
   imports: [
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
     ScheduleModule.forRoot(),
     ConfigModule.forRoot({
       isGlobal: true,
@@ -37,7 +42,16 @@ import { WalletSavings } from './modules/wallet/entities/wallet-savings.entity';
         username: configService.get<string>('DB_USERNAME'),
         password: configService.get<string>('DB_PASSWORD'),
         database: configService.get<string>('DB_NAME'),
-        entities: [User, WalletConfig, WalletTransaction, WalletSavings],
+        entities: [
+          User,
+          WalletConfig,
+          WalletTransaction,
+          WalletSavings,
+          Lawyer,
+          LawChatRoom,
+          LawAppointment,
+        ],
+        autoLoadEntities: true,
         synchronize: true, // Auto create/update table - use false in production
       }),
       inject: [ConfigService],
@@ -55,6 +69,9 @@ import { WalletSavings } from './modules/wallet/entities/wallet-savings.entity';
     UserModule,
     P2pModule,
     WalletModule,
+    LawModule,
+    ChatModule,
+    LawChatModule,
   ],
   controllers: [AppController],
   providers: [

@@ -26,7 +26,7 @@ export class AuthService {
     // Find user and include password field
     const user = await this.userRepository.findOne({
       where: { email },
-      select: ['id', 'email', 'password', 'role', 'displayName'],
+      select: ['id', 'email', 'password', 'role', 'displayName', 'status'],
     });
 
     if (!user) {
@@ -41,6 +41,10 @@ export class AuthService {
       }
     }
 
+    if (user.status === 'suspended') {
+      throw new UnauthorizedException('Your account has been suspended');
+    }
+
     const payload = {
       sub: user.id,
       email: user.email,
@@ -50,6 +54,7 @@ export class AuthService {
     return {
       access_token: await this.jwtService.signAsync(payload),
       user: {
+        id: user.id,
         email: user.email,
         role: user.role,
         displayName: user.displayName,
@@ -92,6 +97,7 @@ export class AuthService {
       password: hashedPassword,
       role: role || Role.USER,
       displayName,
+      status: registerDto.status || 'active',
     });
 
     const savedUser = await this.userRepository.save(newUser);

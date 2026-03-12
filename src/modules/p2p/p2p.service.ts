@@ -69,4 +69,20 @@ export class P2pService {
     };
     return fallbacks[asset] || 0;
   }
+
+  async getAsset24hChange(asset: string): Promise<number> {
+    if (asset === 'VND') return 0;
+    try {
+      const symbol = asset === 'USDT' ? 'USDTBIDR' : `${asset}USDT`; // Placeholder for 24h change, USDT needs a pair like USDT/VND or USDT/DAI. For simplicity let's use USDT as stable (0% change) or compare with a fiat pair if available.
+      // Better: many stablecoins fluctuate ~0.1%. Let's assume 0% for USDT unless we have a USDT/VND historical price.
+      if (asset === 'USDT') return 0;
+
+      const response = await axios.get<{ priceChangePercent: string }>(
+        `https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`,
+      );
+      return parseFloat(response.data.priceChangePercent);
+    } catch {
+      return 0;
+    }
+  }
 }

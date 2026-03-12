@@ -575,8 +575,10 @@ export class WalletService {
       savingsBalance: number;
       vndValue: number;
       price: number;
+      change24h: number;
     }[] = [];
     let totalVndValue = 0;
+    let totalVndValueYesterday = 0;
 
     for (const symbol in assetsMap) {
       const entry = assetsMap[symbol];
@@ -584,9 +586,17 @@ export class WalletService {
         continue;
 
       const price = await this.p2pService.getAssetPriceInVnd(symbol);
+      const change24h = await this.p2pService.getAsset24hChange(symbol);
       const totalBalance = entry.balance + entry.savingsBalance;
       const vndValue = totalBalance * price;
+
+      // Calculate yesterday's value for this asset
+      // vndValue = yesterdayVndValue * (1 + change24h/100)
+      // yesterdayVndValue = vndValue / (1 + change24h/100)
+      const yesterdayVndValue = vndValue / (1 + change24h / 100);
+
       totalVndValue += vndValue;
+      totalVndValueYesterday += yesterdayVndValue;
 
       summary.push({
         symbol,
@@ -594,11 +604,19 @@ export class WalletService {
         savingsBalance: entry.savingsBalance,
         vndValue,
         price,
+        change24h,
       });
     }
 
+    const diff = totalVndValue - totalVndValueYesterday;
+    const percent =
+      totalVndValueYesterday > 0 ? (diff / totalVndValueYesterday) * 100 : 0;
+
     return {
       totalVndValue,
+      totalVndValueYesterday,
+      dailyChangeVnd: diff,
+      dailyChangePercent: percent,
       assets: summary.sort((a, b) => b.vndValue - a.vndValue),
     };
   }

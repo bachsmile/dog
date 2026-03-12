@@ -28,6 +28,12 @@ export class User {
   })
   role: Role;
 
+  @Column({
+    type: 'varchar',
+    default: 'active',
+  })
+  status: 'active' | 'suspended';
+
   @CreateDateColumn()
   createdAt: Date;
 
