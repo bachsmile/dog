@@ -60,6 +60,9 @@ export class WalletSavings {
   @Column({ nullable: true })
   note: string;
 
+  @Column({ nullable: true })
+  storageId: string;
+
   @Column('decimal', { precision: 20, scale: 8, default: 0 })
   lastDailyInterest: number; // Lãi nhận được gần nhất
 

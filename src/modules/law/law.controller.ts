@@ -12,6 +12,10 @@ import { CreateLawyerDto, UpdateLawyerDto } from './dto/lawyer.dto';
 import { CreateAppointmentDto, QuickBookingDto } from './dto/appointment.dto';
 import { Roles, Role } from '../../decorators/roles.decorator';
 import { ReqUser } from '../../decorators/req-user.decorator';
+import {
+  CreateLawApplicationDto,
+  UpdateLawApplicationDto,
+} from './dto/law-application.dto';
 
 @Controller('law')
 export class LawController {
@@ -89,5 +93,37 @@ export class LawController {
   @Roles(Role.ADMIN, Role.LAWYER)
   getAllAppointments() {
     return this.lawService.getAllAppointments();
+  }
+
+  // Application Templates
+  @Get('applications')
+  findAllApplications() {
+    return this.lawService.findAllApplications();
+  }
+
+  @Get('applications/:id')
+  findOneApplication(@Param('id') id: string) {
+    return this.lawService.findOneApplication(id);
+  }
+
+  @Post('applications')
+  @Roles(Role.ADMIN, Role.LAWYER)
+  createApplication(@Body() dto: CreateLawApplicationDto) {
+    return this.lawService.createApplication(dto);
+  }
+
+  @Patch('applications/:id')
+  @Roles(Role.ADMIN, Role.LAWYER)
+  updateApplication(
+    @Param('id') id: string,
+    @Body() dto: UpdateLawApplicationDto,
+  ) {
+    return this.lawService.updateApplication(id, dto);
+  }
+
+  @Delete('applications/:id')
+  @Roles(Role.ADMIN, Role.LAWYER)
+  removeApplication(@Param('id') id: string) {
+    return this.lawService.removeApplication(id);
   }
 }

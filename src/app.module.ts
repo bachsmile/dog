@@ -26,6 +26,7 @@ import { ChatModule } from './modules/chat/chat.module';
 import { LawChatModule } from './modules/law-chat/law-chat.module';
 import { LawChatRoom } from './modules/law-chat/entities/law-chat-room.entity';
 import { LawAppointment } from './modules/law/entities/law-appointment.entity';
+import { LawApplication } from './modules/law/entities/law-application.entity';
 
 @Module({
   imports: [
@@ -50,6 +51,7 @@ import { LawAppointment } from './modules/law/entities/law-appointment.entity';
           Lawyer,
           LawChatRoom,
           LawAppointment,
+          LawApplication,
         ],
         autoLoadEntities: true,
         synchronize: true, // Auto create/update table - use false in production

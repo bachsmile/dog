@@ -10,7 +10,12 @@ import { User } from '../user/entities/user.entity';
 import { Role } from '../../decorators/roles.decorator';
 import { CreateLawyerDto, UpdateLawyerDto } from './dto/lawyer.dto';
 import { LawAppointment } from './entities/law-appointment.entity';
+import { LawApplication } from './entities/law-application.entity';
 import { CreateAppointmentDto, QuickBookingDto } from './dto/appointment.dto';
+import {
+  CreateLawApplicationDto,
+  UpdateLawApplicationDto,
+} from './dto/law-application.dto';
 
 @Injectable()
 export class LawService {
@@ -21,6 +26,8 @@ export class LawService {
     private userRepository: Repository<User>,
     @InjectRepository(LawAppointment)
     private appointmentRepository: Repository<LawAppointment>,
+    @InjectRepository(LawApplication)
+    private applicationRepository: Repository<LawApplication>,
   ) {}
 
   async findAll() {
@@ -303,5 +310,32 @@ export class LawService {
       }
     }
     return false;
+  }
+
+  // Applications
+  async findAllApplications() {
+    return this.applicationRepository.find({ order: { createdAt: 'DESC' } });
+  }
+
+  async findOneApplication(id: string) {
+    const app = await this.applicationRepository.findOne({ where: { id } });
+    if (!app) throw new NotFoundException('Application template not found');
+    return app;
+  }
+
+  async createApplication(dto: CreateLawApplicationDto) {
+    const app = this.applicationRepository.create(dto);
+    return this.applicationRepository.save(app);
+  }
+
+  async updateApplication(id: string, dto: UpdateLawApplicationDto) {
+    const app = await this.findOneApplication(id);
+    Object.assign(app, dto);
+    return this.applicationRepository.save(app);
+  }
+
+  async removeApplication(id: string) {
+    const app = await this.findOneApplication(id);
+    return this.applicationRepository.remove(app);
   }
 }

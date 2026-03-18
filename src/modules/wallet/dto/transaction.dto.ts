@@ -31,6 +31,10 @@ export class CreateTransactionDto {
   @IsString()
   @IsOptional()
   source?: string;
+
+  @IsString()
+  @IsOptional()
+  status?: string;
 }
 
 export class UpdateTransactionDto {

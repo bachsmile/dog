@@ -7,12 +7,14 @@ import {
   UseGuards,
   Request,
   Delete,
+  Patch,
 } from '@nestjs/common';
 import { WalletService } from './wallet.service';
 import { AuthGuard } from '../../guards/auth.guard';
 import { WalletGuard } from '../../guards/wallet.guard';
 import { WalletSecurityDto } from './dto/wallet-security.dto';
 import { CreateTransactionDto } from './dto/transaction.dto';
+import { AdjustStorageWalletDto } from './dto/adjust-storage.dto';
 import { SavingsType } from './entities/wallet-savings.entity';
 
 interface AuthenticatedRequest extends Request {
@@ -121,6 +123,7 @@ export class WalletController {
       savingsType: SavingsType;
       durationDays?: number;
       note?: string;
+      storageId?: string;
     },
   ) {
     return this.walletService.createSavings(req.user.sub, dto);
@@ -149,5 +152,96 @@ export class WalletController {
   @Post('savings/cron/fixed')
   async processFixed() {
     return this.walletService.processFixedMaturity();
+  }
+
+  // Storage Wallet Endpoints
+  @Get('storage')
+  async getStorage(@Request() req: AuthenticatedRequest) {
+    return this.walletService.getStorageWallets(req.user.sub);
+  }
+
+  @Post('storage')
+  @UseGuards(WalletGuard)
+  async createStorage(
+    @Request() req: AuthenticatedRequest,
+    @Body()
+    dto: {
+      assetSymbol: string;
+      quantity: number;
+      platform: string;
+      note?: string;
+    },
+  ) {
+    return this.walletService.createStorageWallet(req.user.sub, dto);
+  }
+
+  @Post('storage/:id/withdraw')
+  @UseGuards(WalletGuard)
+  async withdrawFromStorage(
+    @Request() req: AuthenticatedRequest,
+    @Param('id') id: string,
+  ) {
+    return this.walletService.withdrawFromStorage(req.user.sub, id);
+  }
+
+  @Post('storage/:id/adjust')
+  @UseGuards(WalletGuard)
+  async adjustStorage(
+    @Request() req: AuthenticatedRequest,
+    @Param('id') id: string,
+    @Body() dto: AdjustStorageWalletDto,
+  ) {
+    return this.walletService.adjustStorageWallet(req.user.sub, id, dto);
+  }
+
+  @Get('storage/:id/history')
+  async getStorageHistory(
+    @Request() req: AuthenticatedRequest,
+    @Param('id') id: string,
+  ) {
+    return this.walletService.getStorageHistory(req.user.sub, id);
+  }
+
+  @Post('storage/:id/initial')
+  async patchInitialQuantity(
+    @Request() req: AuthenticatedRequest,
+    @Param('id') id: string,
+    @Body() dto: { initialQuantity: number },
+  ) {
+    return this.walletService.updateInitialQuantity(
+      req.user.sub,
+      id,
+      dto.initialQuantity,
+    );
+  }
+
+  @Delete('storage/:id')
+  async deleteStorage(
+    @Request() req: AuthenticatedRequest,
+    @Param('id') id: string,
+  ) {
+    return this.walletService.deleteStorageWallet(req.user.sub, id);
+  }
+
+  @Delete('storage/history/:id')
+  async deleteHistory(
+    @Request() req: AuthenticatedRequest,
+    @Param('id') id: string,
+  ) {
+    return this.walletService.deleteStorageHistory(req.user.sub, id);
+  }
+
+  @Patch('storage/history/:id')
+  async updateHistory(
+    @Request() req: AuthenticatedRequest,
+    @Param('id') id: string,
+    @Body() dto: { note?: string; amount?: number },
+  ) {
+    return this.walletService.updateStorageHistory(req.user.sub, id, dto);
+  }
+
+  @Delete('clear-all')
+  async clearAll(@Request() req: AuthenticatedRequest) {
+    return this.walletService.clearAllWalletData(req.user.sub);
   }
 }
