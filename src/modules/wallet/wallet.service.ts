@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, DeepPartial } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import { JwtService } from '@nestjs/jwt';
 import { Cron } from '@nestjs/schedule';
@@ -575,6 +575,7 @@ export class WalletService {
           price: 0,
           total: 0,
           source: `Đáo hạn gửi cố định ${days} ngày - ${s.platform} (Gốc)`,
+          status: 'locked',
         });
 
         // Record interest as RECEIVED if > 0
@@ -608,12 +609,13 @@ export class WalletService {
       throw new NotFoundException('Sổ gửi không tồn tại hoặc đã hoàn thành');
     }
 
-    if (savings.savingsType === SavingsType.FIXED) {
-      throw new BadRequestException('Không thể rút sổ gửi cố định trước hạn');
+    let accruedInterest = 0;
+
+    if (savings.savingsType === SavingsType.FLEXIBLE) {
+      accruedInterest = Number(savings.accruedInterest);
     }
 
     const totalAmount = Number(savings.quantity);
-    const accruedInterest = Number(savings.accruedInterest);
     const principal = totalAmount - accruedInterest;
 
     // Delete the record
@@ -662,6 +664,7 @@ export class WalletService {
         price: 0,
         total: 0,
         source: `Rút gửi linh hoạt - ${savings.platform} (Gốc)`,
+        status: 'locked',
       });
 
       // Record interest as RECEIVED if > 0
@@ -682,6 +685,17 @@ export class WalletService {
       totalAmount,
       accruedInterest: accruedInterest,
     };
+  }
+
+  async deleteSavings(userId: string, id: string) {
+    const savings = await this.walletSavingsRepository.findOne({
+      where: { id, userId },
+    });
+    if (!savings) {
+      throw new NotFoundException('Sổ gửi không tồn tại');
+    }
+    await this.walletSavingsRepository.remove(savings);
+    return { success: true };
   }
 
   async getSavingsSummary(userId: string) {
@@ -808,6 +822,7 @@ export class WalletService {
   async getStorageWallets(userId: string, assetSymbol?: string) {
     return this.storageWalletRepository.find({
       where: assetSymbol ? { userId, assetSymbol } : { userId },
+      relations: ['history'],
       order: { createdAt: 'DESC' },
     });
   }
@@ -1014,5 +1029,108 @@ export class WalletService {
     await this.walletConfigRepository.delete({ userId });
 
     return { success: true };
+  }
+
+  async importTransactions(userId: string, transactions: any[]) {
+    for (const tx of transactions) {
+      try {
+        const data: any = {
+          ...tx,
+          userId,
+          assetSymbol: tx.assetSymbol || tx.asset,
+          quantity: Number(tx.quantity) || 0,
+          price: Number(tx.price) || 0,
+          total: Number(tx.total) || 0,
+          timestamp: tx.timestamp ? new Date(tx.timestamp) : new Date(),
+        };
+        delete data.id;
+        delete data.asset;
+
+        const transaction = this.walletTransactionRepository.create(
+          data as DeepPartial<WalletTransaction>,
+        );
+        await this.walletTransactionRepository.save(transaction);
+      } catch (e) {
+        console.error('Error importing transaction:', e, tx);
+        throw e;
+      }
+    }
+    return { success: true, count: transactions.length };
+  }
+
+  async importSavings(userId: string, savings: any[]) {
+    for (const s of savings) {
+      try {
+        const data: any = {
+          ...s,
+          userId,
+          assetSymbol: s.assetSymbol || s.asset,
+          quantity: Number(s.quantity) || 0,
+          annualRate: Number(s.annualRate) || 0,
+          accruedInterest: Number(s.accruedInterest) || 0,
+          startDate: s.startDate ? new Date(s.startDate) : new Date(),
+          endDate: s.endDate ? new Date(s.endDate) : null,
+          lastInterestDate: s.lastInterestDate
+            ? new Date(s.lastInterestDate)
+            : new Date(),
+        };
+        delete data.id;
+        delete data.asset;
+
+        const saving = this.walletSavingsRepository.create(
+          data as DeepPartial<WalletSavings>,
+        );
+        await this.walletSavingsRepository.save(saving);
+      } catch (e) {
+        console.error('Error importing saving:', e, s);
+        throw e;
+      }
+    }
+    return { success: true, count: savings.length };
+  }
+
+  async importStorage(userId: string, storage: any[]) {
+    for (const s of storage) {
+      try {
+        const history = s.history;
+        const data: any = {
+          ...s,
+          userId,
+          assetSymbol: s.assetSymbol || s.asset,
+          initialQuantity: Number(s.initialQuantity) || 0,
+          quantity: Number(s.quantity) || 0,
+          createdAt: s.createdAt ? new Date(s.createdAt) : new Date(),
+        };
+        delete data.id;
+        delete data.asset;
+        delete data.history;
+
+        const wallet = this.storageWalletRepository.create(
+          data as DeepPartial<StorageWallet>,
+        );
+        const saved = await this.storageWalletRepository.save(wallet);
+
+        if (history && Array.isArray(history)) {
+          for (const h of history) {
+            const hData: any = {
+              ...h,
+              storageWalletId: (saved as any).id,
+              amount: Number(h.amount) || 0,
+              balanceAfter: Number(h.balanceAfter) || 0,
+              createdAt: h.createdAt ? new Date(h.createdAt) : new Date(),
+            };
+            delete hData.id;
+            const hist = this.storageHistoryRepository.create(
+              hData as DeepPartial<StorageHistory>,
+            );
+            await this.storageHistoryRepository.save(hist);
+          }
+        }
+      } catch (e) {
+        console.error('Error importing storage wallet:', e, s);
+        throw e;
+      }
+    }
+    return { success: true, count: storage.length };
   }
 }

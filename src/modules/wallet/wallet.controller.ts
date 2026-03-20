@@ -143,6 +143,14 @@ export class WalletController {
     return this.walletService.getSavingsSummary(req.user.sub);
   }
 
+  @Delete('savings/:id')
+  async deleteSavings(
+    @Request() req: AuthenticatedRequest,
+    @Param('id') id: string,
+  ) {
+    return this.walletService.deleteSavings(req.user.sub, id);
+  }
+
   // Cron trigger endpoints (should be called by scheduler)
   @Post('savings/cron/flexible')
   async processFlexible() {
@@ -243,5 +251,29 @@ export class WalletController {
   @Delete('clear-all')
   async clearAll(@Request() req: AuthenticatedRequest) {
     return this.walletService.clearAllWalletData(req.user.sub);
+  }
+  
+  @Post('transactions/import')
+  async importTransactions(
+    @Request() req: AuthenticatedRequest,
+    @Body() dto: { transactions: any[] },
+  ) {
+    return this.walletService.importTransactions(req.user.sub, dto.transactions);
+  }
+
+  @Post('savings/import')
+  async importSavings(
+    @Request() req: AuthenticatedRequest,
+    @Body() dto: { savings: any[] },
+  ) {
+    return this.walletService.importSavings(req.user.sub, dto.savings);
+  }
+
+  @Post('storage/import')
+  async importStorage(
+    @Request() req: AuthenticatedRequest,
+    @Body() dto: { storage: any[] },
+  ) {
+    return this.walletService.importStorage(req.user.sub, dto.storage);
   }
 }

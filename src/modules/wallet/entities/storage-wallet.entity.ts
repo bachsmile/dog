@@ -4,7 +4,9 @@ import {
   Column,
   CreateDateColumn,
   UpdateDateColumn,
+  OneToMany,
 } from 'typeorm';
+import { StorageHistory } from './storage-history.entity';
 
 export enum StorageWalletStatus {
   ACTIVE = 'active',
@@ -46,4 +48,7 @@ export class StorageWallet {
 
   @UpdateDateColumn()
   updatedAt: Date;
+
+  @OneToMany(() => StorageHistory, (history) => history.storageWallet)
+  history: StorageHistory[];
 }

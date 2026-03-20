@@ -22,7 +22,9 @@ export class StorageHistory {
   @Column()
   storageWalletId: string;
 
-  @ManyToOne(() => StorageWallet, { onDelete: 'CASCADE' })
+  @ManyToOne(() => StorageWallet, (wallet) => wallet.history, {
+    onDelete: 'CASCADE',
+  })
   storageWallet: StorageWallet;
 
   @Column({
