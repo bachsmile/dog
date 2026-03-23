@@ -21,6 +21,12 @@ export class AuthController {
   }
 
   @Public()
+  @Post('refresh')
+  refresh(@Body() refreshTokenDto: { refresh_token: string }) {
+    return this.authService.refreshToken(refreshTokenDto.refresh_token);
+  }
+
+  @Public()
   @Get('trial')
   trial() {
     console.log('trial');

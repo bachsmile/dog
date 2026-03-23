@@ -8,6 +8,7 @@ import {
   Request,
   Delete,
   Patch,
+  Put,
 } from '@nestjs/common';
 import { WalletService } from './wallet.service';
 import { AuthGuard } from '../../guards/auth.guard';
@@ -78,6 +79,22 @@ export class WalletController {
     @Body() dto: CreateTransactionDto,
   ) {
     return this.walletService.createTransaction(req.user.sub, dto);
+  }
+
+  @Put('transactions/:assetSymbol/:id')
+  @UseGuards(WalletGuard)
+  async updateTransaction(
+    @Request() req: AuthenticatedRequest,
+    @Param('assetSymbol') assetSymbol: string,
+    @Param('id') id: string,
+    @Body() dto: Partial<CreateTransactionDto>,
+  ) {
+    return await this.walletService.updateTransaction(
+      req.user.sub,
+      assetSymbol,
+      id,
+      dto,
+    );
   }
 
   @Delete('transactions/:assetSymbol/:id')
@@ -275,5 +292,13 @@ export class WalletController {
     @Body() dto: { storage: any[] },
   ) {
     return this.walletService.importStorage(req.user.sub, dto.storage);
+  }
+
+  @Post('faucet')
+  async faucet(
+    @Request() req: AuthenticatedRequest,
+    @Body() dto: { assetSymbol: string },
+  ) {
+    return this.walletService.faucet(req.user.sub, dto.assetSymbol);
   }
 }

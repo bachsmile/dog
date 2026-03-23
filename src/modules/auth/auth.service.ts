@@ -12,6 +12,14 @@ import { RegisterDto } from './dto/register.dto';
 import { Role } from '../../decorators/roles.decorator';
 import { User } from '../user/entities/user.entity';
 
+interface JwtPayload {
+  sub: string;
+  email: string;
+  role: string;
+  exp?: number;
+  iat?: number;
+}
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -45,14 +53,19 @@ export class AuthService {
       throw new UnauthorizedException('Your account has been suspended');
     }
 
-    const payload = {
+    const payload: JwtPayload = {
       sub: user.id,
       email: user.email,
       role: user.role,
     };
 
     return {
-      access_token: await this.jwtService.signAsync(payload),
+      access_token: await this.jwtService.signAsync(payload, {
+        expiresIn: '1h',
+      }),
+      refresh_token: await this.jwtService.signAsync(payload, {
+        expiresIn: '7d',
+      }),
       user: {
         id: user.id,
         email: user.email,
@@ -60,6 +73,29 @@ export class AuthService {
         displayName: user.displayName,
       },
     };
+  }
+
+  async refreshToken(token: string) {
+    try {
+      const payload = await this.jwtService.verifyAsync<JwtPayload>(token);
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { exp, iat, ...cleanPayload } = payload;
+
+      const newAccessToken = await this.jwtService.signAsync(cleanPayload, {
+        expiresIn: '1h',
+      });
+      const newRefreshToken = await this.jwtService.signAsync(cleanPayload, {
+        expiresIn: '7d',
+      });
+
+
+      return {
+        access_token: newAccessToken,
+        refresh_token: newRefreshToken,
+      };
+    } catch {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
   }
 
   async trial() {

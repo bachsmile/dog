@@ -227,6 +227,34 @@ export class WalletService {
     return saved;
   }
 
+  async updateTransaction(
+    userId: string,
+    assetSymbol: string,
+    id: string,
+    data: Partial<WalletTransaction>,
+  ) {
+    const tx = await this.walletTransactionRepository.findOne({
+      where: { id, userId, assetSymbol },
+    });
+
+    if (!tx) throw new NotFoundException('Giao dịch không tồn tại');
+
+    // Update with incoming data
+    Object.assign(tx, data);
+
+    // Convert string inputs to Numbers if they came from JSON
+    if (data.quantity !== undefined) tx.quantity = Number(data.quantity);
+    if (data.price !== undefined) tx.price = Number(data.price);
+    if (data.total !== undefined) tx.total = Number(data.total);
+    if (data.avgBuyPriceAtTime !== undefined)
+      tx.avgBuyPriceAtTime = Number(data.avgBuyPriceAtTime);
+    if (data.profitAmount !== undefined)
+      tx.profitAmount = Number(data.profitAmount);
+
+    return this.walletTransactionRepository.save(tx);
+  }
+
+
   async getTransactions(userId: string, assetSymbol: string) {
     return this.walletTransactionRepository.find({
       where: { userId, assetSymbol },
@@ -1132,5 +1160,21 @@ export class WalletService {
       }
     }
     return { success: true, count: storage.length };
+  }
+
+  async faucet(userId: string, assetSymbol: string) {
+    if (assetSymbol !== 'FZ' && assetSymbol !== 'VND') {
+      throw new BadRequestException('Faucet chỉ hỗ trợ FZ và VND (Triển khai nội bộ)');
+    }
+
+    return this.createTransaction(userId, {
+      assetSymbol,
+      type: TransactionType.DEPOSIT,
+      quantity: 1000,
+      price: assetSymbol === 'VND' ? 1 : 50000,
+      total: assetSymbol === 'VND' ? 1000 : 50000000,
+      source: 'Internal Faucet (Hệ thống cấp phát nội bộ)',
+      status: 'completed',
+    });
   }
 }

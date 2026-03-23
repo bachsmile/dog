@@ -1,4 +1,4 @@
-import { IsString, IsNumber, IsOptional, Min, Max, IsArray } from 'class-validator';
+import { IsArray, IsNumber, IsOptional, IsString } from 'class-validator';
 
 export class CreateAppointmentDto {
   @IsString()

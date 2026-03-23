@@ -63,9 +63,10 @@ export class P2pService {
 
     // Default fallbacks if API fails
     const fallbacks: Record<string, number> = {
-      USDT: 0,
-      BTC: 0,
-      ETH: 0,
+      USDT: 25000,
+      BTC: 1600000000,
+      ETH: 100000000,
+      FZ: 50000, // Fixed price for Finzo Token
     };
     return fallbacks[asset] || 0;
   }
