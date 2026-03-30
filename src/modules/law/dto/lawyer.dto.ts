@@ -15,6 +15,10 @@ export class CreateLawyerDto {
   @IsString()
   @IsOptional()
   officeId?: string;
+
+  @IsString()
+  @IsOptional()
+  title?: string;
 }
 
 export class UpdateLawyerDto {
@@ -29,6 +33,10 @@ export class UpdateLawyerDto {
   @IsString()
   @IsOptional()
   officeId?: string;
+
+  @IsString()
+  @IsOptional()
+  title?: string;
 
   @IsOptional()
   rating?: number;

@@ -52,6 +52,12 @@ export class User {
   })
   subscriptionExpiresAt: Date;
 
+  @Column({
+    type: 'int',
+    default: 0,
+  })
+  loginCount: number;
+
   @CreateDateColumn()
   createdAt: Date;
 

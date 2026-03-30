@@ -42,6 +42,7 @@ export class AuthService {
         'displayName',
         'status',
         'modules',
+        'loginCount',
       ],
     });
 
@@ -67,6 +68,10 @@ export class AuthService {
       role: user.role,
     };
 
+    // Increment login count
+    user.loginCount = (user.loginCount || 0) + 1;
+    await this.userRepository.save(user);
+
     return {
       access_token: await this.jwtService.signAsync(payload, {
         expiresIn: '1h',
@@ -80,6 +85,7 @@ export class AuthService {
         role: user.role,
         displayName: user.displayName,
         modules: user.modules || [],
+        loginCount: user.loginCount,
       },
     };
   }
@@ -142,6 +148,7 @@ export class AuthService {
       displayName,
       status: registerDto.status || 'active',
       modules: registerDto.modules || [],
+      loginCount: 0,
     });
 
     const savedUser = await this.userRepository.save(newUser);
@@ -152,6 +159,7 @@ export class AuthService {
         email: savedUser.email,
         role: savedUser.role,
         modules: savedUser.modules || [],
+        loginCount: savedUser.loginCount,
       },
     };
   }

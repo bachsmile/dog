@@ -83,6 +83,7 @@ export class LawService {
       userId,
       specialty,
       bio,
+      title: createLawyerDto.title,
     });
 
     // Update user role

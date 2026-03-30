@@ -93,19 +93,19 @@ export class LawController {
   }
 
   @Patch('appointments/:id/confirm')
-  @Roles(Role.ADMIN, Role.LAWYER)
+  @Roles(Role.ADMIN, Role.MANAGER, Role.MODERATOR, Role.LAWYER)
   confirmAppointment(@Param('id') id: string) {
     return this.lawService.confirmAppointment(id);
   }
 
   @Patch('appointments/:id/cancel')
-  @Roles(Role.ADMIN, Role.LAWYER)
+  @Roles(Role.ADMIN, Role.MANAGER, Role.MODERATOR, Role.LAWYER)
   cancelAppointment(@Param('id') id: string) {
     return this.lawService.cancelAppointment(id);
   }
 
   @Get('appointments')
-  @Roles(Role.ADMIN, Role.LAWYER)
+  @Roles(Role.ADMIN, Role.MANAGER, Role.MODERATOR, Role.LAWYER)
   getAllAppointments() {
     return this.lawService.getAllAppointments();
   }
@@ -122,13 +122,13 @@ export class LawController {
   }
 
   @Post('applications')
-  @Roles(Role.ADMIN, Role.LAWYER)
+  @Roles(Role.ADMIN, Role.MANAGER, Role.MODERATOR, Role.LAWYER)
   createApplication(@Body() dto: CreateLawApplicationDto) {
     return this.lawService.createApplication(dto);
   }
 
   @Patch('applications/:id')
-  @Roles(Role.ADMIN, Role.LAWYER)
+  @Roles(Role.ADMIN, Role.MANAGER, Role.MODERATOR, Role.LAWYER)
   updateApplication(
     @Param('id') id: string,
     @Body() dto: UpdateLawApplicationDto,
@@ -137,14 +137,14 @@ export class LawController {
   }
 
   @Delete('applications/:id')
-  @Roles(Role.ADMIN, Role.LAWYER)
+  @Roles(Role.ADMIN, Role.MANAGER, Role.MODERATOR, Role.LAWYER)
   removeApplication(@Param('id') id: string) {
     return this.lawService.removeApplication(id);
   }
 
   // Submissions (Submitted Applications)
   @Get('submissions')
-  @Roles(Role.ADMIN, Role.LAWYER)
+  @Roles(Role.ADMIN, Role.MANAGER, Role.MODERATOR, Role.LAWYER)
   findAllSubmissions() {
     return this.lawService.findAllSubmissions();
   }
@@ -163,7 +163,7 @@ export class LawController {
   }
 
   @Patch('submissions/:id/status')
-  @Roles(Role.ADMIN, Role.LAWYER)
+  @Roles(Role.ADMIN, Role.MANAGER, Role.MODERATOR, Role.LAWYER)
   updateSubmissionStatus(
     @Param('id') id: string,
     @Body() dto: UpdateLawSubmissionStatusDto,
@@ -236,13 +236,13 @@ export class LawController {
   }
 
   @Get('questions')
-  @Roles(Role.ADMIN, Role.LAWYER)
+  @Roles(Role.ADMIN, Role.MANAGER, Role.MODERATOR, Role.LAWYER)
   findAllQuestions() {
     return this.lawService.findAllQuestions();
   }
 
   @Patch('questions/:id/answer')
-  @Roles(Role.ADMIN, Role.LAWYER)
+  @Roles(Role.ADMIN, Role.MANAGER, Role.MODERATOR, Role.LAWYER)
   answerQuestion(
     @Param('id') id: string,
     @ReqUser('sub') userId: string,

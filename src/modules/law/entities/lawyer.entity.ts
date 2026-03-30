@@ -27,6 +27,9 @@ export class Lawyer {
   @Column({ type: 'text', nullable: true })
   bio: string;
 
+  @Column({ nullable: true })
+  title: string;
+
   @Column({ type: 'float', default: 5.0 })
   rating: number;
 
