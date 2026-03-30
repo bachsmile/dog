@@ -6,4 +6,5 @@ export class RegisterDto {
   displayName?: string;
   role?: Role;
   status?: 'active' | 'suspended';
+  modules?: string[];
 }

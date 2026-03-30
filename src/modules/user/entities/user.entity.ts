@@ -34,6 +34,24 @@ export class User {
   })
   status: 'active' | 'suspended';
 
+  @Column({
+    type: 'simple-array',
+    nullable: true,
+  })
+  modules: string[];
+
+  @Column({
+    type: 'varchar',
+    default: 'trial',
+  })
+  subscriptionPlan: string;
+
+  @Column({
+    type: 'timestamp',
+    nullable: true,
+  })
+  subscriptionExpiresAt: Date;
+
   @CreateDateColumn()
   createdAt: Date;
 

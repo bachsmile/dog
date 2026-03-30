@@ -26,11 +26,18 @@ interface AuthenticatedRequest extends Request {
 }
 
 @Controller('wallet')
-@UseGuards(AuthGuard)
 export class WalletController {
   constructor(private readonly walletService: WalletService) {}
 
+  @Get('system-config/:key')
+  async getSystemConfig(@Param('key') key: string) {
+    const value = await this.walletService.getSystemValue(key);
+    // Return pure string as requested by useWeb3.ts (data === 'string')
+    return value;
+  }
+
   @Post('password')
+  @UseGuards(AuthGuard)
   async setPassword(
     @Request() req: AuthenticatedRequest,
     @Body() dto: WalletSecurityDto,
@@ -43,6 +50,7 @@ export class WalletController {
   }
 
   @Post('unlock')
+  @UseGuards(AuthGuard)
   async unlock(
     @Request() req: AuthenticatedRequest,
     @Body() dto: WalletSecurityDto,
@@ -55,6 +63,7 @@ export class WalletController {
   }
 
   @Get('status/:assetSymbol')
+  @UseGuards(AuthGuard)
   async getStatus(
     @Request() req: AuthenticatedRequest,
     @Param('assetSymbol') assetSymbol: string,
@@ -117,12 +126,14 @@ export class WalletController {
   }
 
   @Get('portfolio/summary')
+  @UseGuards(AuthGuard)
   async getPortfolioSummary(@Request() req: AuthenticatedRequest) {
     return this.walletService.getPortfolioSummary(req.user.sub);
   }
 
   // Savings Endpoints
   @Get('savings')
+  @UseGuards(AuthGuard)
   async getSavings(@Request() req: AuthenticatedRequest) {
     return this.walletService.getSavings(req.user.sub);
   }
@@ -156,11 +167,13 @@ export class WalletController {
   }
 
   @Get('savings/summary')
+  @UseGuards(AuthGuard)
   async getSavingsSummary(@Request() req: AuthenticatedRequest) {
     return this.walletService.getSavingsSummary(req.user.sub);
   }
 
   @Delete('savings/:id')
+  @UseGuards(AuthGuard)
   async deleteSavings(
     @Request() req: AuthenticatedRequest,
     @Param('id') id: string,
@@ -181,6 +194,7 @@ export class WalletController {
 
   // Storage Wallet Endpoints
   @Get('storage')
+  @UseGuards(AuthGuard)
   async getStorage(@Request() req: AuthenticatedRequest) {
     return this.walletService.getStorageWallets(req.user.sub);
   }
@@ -220,6 +234,7 @@ export class WalletController {
   }
 
   @Get('storage/:id/history')
+  @UseGuards(AuthGuard)
   async getStorageHistory(
     @Request() req: AuthenticatedRequest,
     @Param('id') id: string,
@@ -228,6 +243,7 @@ export class WalletController {
   }
 
   @Post('storage/:id/initial')
+  @UseGuards(AuthGuard)
   async patchInitialQuantity(
     @Request() req: AuthenticatedRequest,
     @Param('id') id: string,
@@ -241,6 +257,7 @@ export class WalletController {
   }
 
   @Delete('storage/:id')
+  @UseGuards(AuthGuard)
   async deleteStorage(
     @Request() req: AuthenticatedRequest,
     @Param('id') id: string,
@@ -249,6 +266,7 @@ export class WalletController {
   }
 
   @Delete('storage/history/:id')
+  @UseGuards(AuthGuard)
   async deleteHistory(
     @Request() req: AuthenticatedRequest,
     @Param('id') id: string,
@@ -257,6 +275,7 @@ export class WalletController {
   }
 
   @Patch('storage/history/:id')
+  @UseGuards(AuthGuard)
   async updateHistory(
     @Request() req: AuthenticatedRequest,
     @Param('id') id: string,
@@ -266,19 +285,25 @@ export class WalletController {
   }
 
   @Delete('clear-all')
+  @UseGuards(AuthGuard)
   async clearAll(@Request() req: AuthenticatedRequest) {
     return this.walletService.clearAllWalletData(req.user.sub);
   }
-  
+
   @Post('transactions/import')
+  @UseGuards(AuthGuard)
   async importTransactions(
     @Request() req: AuthenticatedRequest,
     @Body() dto: { transactions: any[] },
   ) {
-    return this.walletService.importTransactions(req.user.sub, dto.transactions);
+    return this.walletService.importTransactions(
+      req.user.sub,
+      dto.transactions,
+    );
   }
 
   @Post('savings/import')
+  @UseGuards(AuthGuard)
   async importSavings(
     @Request() req: AuthenticatedRequest,
     @Body() dto: { savings: any[] },
@@ -287,6 +312,7 @@ export class WalletController {
   }
 
   @Post('storage/import')
+  @UseGuards(AuthGuard)
   async importStorage(
     @Request() req: AuthenticatedRequest,
     @Body() dto: { storage: any[] },
@@ -295,6 +321,7 @@ export class WalletController {
   }
 
   @Post('faucet')
+  @UseGuards(AuthGuard)
   async faucet(
     @Request() req: AuthenticatedRequest,
     @Body() dto: { assetSymbol: string },

@@ -27,6 +27,12 @@ import { LawChatModule } from './modules/law-chat/law-chat.module';
 import { LawChatRoom } from './modules/law-chat/entities/law-chat-room.entity';
 import { LawAppointment } from './modules/law/entities/law-appointment.entity';
 import { LawApplication } from './modules/law/entities/law-application.entity';
+import { LawSubmission } from './modules/law/entities/law-submission.entity';
+import { LicenseModule } from './modules/license/license.module';
+import { License } from './modules/license/entities/license.entity';
+import { GeminiModule } from './modules/gemini/gemini.module';
+
+
 
 @Module({
   imports: [
@@ -52,7 +58,10 @@ import { LawApplication } from './modules/law/entities/law-application.entity';
           LawChatRoom,
           LawAppointment,
           LawApplication,
+          LawSubmission,
+          License,
         ],
+
         autoLoadEntities: true,
         synchronize: true, // Auto create/update table - use false in production
       }),
@@ -74,7 +83,11 @@ import { LawApplication } from './modules/law/entities/law-application.entity';
     LawModule,
     ChatModule,
     LawChatModule,
+    LicenseModule,
+    GeminiModule,
   ],
+
+
   controllers: [AppController],
   providers: [
     AppService,

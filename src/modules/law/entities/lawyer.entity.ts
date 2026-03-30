@@ -36,6 +36,9 @@ export class Lawyer {
   @Column({ default: false })
   isVerified: boolean;
 
+  @Column({ nullable: true })
+  officeId: string;
+
   /**
    * Compact busy schedule storage
    * Format: Array of "YYYY-MM-DD-[hour1,hour2,...]"

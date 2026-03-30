@@ -34,7 +34,15 @@ export class AuthService {
     // Find user and include password field
     const user = await this.userRepository.findOne({
       where: { email },
-      select: ['id', 'email', 'password', 'role', 'displayName', 'status'],
+      select: [
+        'id',
+        'email',
+        'password',
+        'role',
+        'displayName',
+        'status',
+        'modules',
+      ],
     });
 
     if (!user) {
@@ -71,6 +79,7 @@ export class AuthService {
         email: user.email,
         role: user.role,
         displayName: user.displayName,
+        modules: user.modules || [],
       },
     };
   }
@@ -87,8 +96,6 @@ export class AuthService {
       const newRefreshToken = await this.jwtService.signAsync(cleanPayload, {
         expiresIn: '7d',
       });
-
-
       return {
         access_token: newAccessToken,
         refresh_token: newRefreshToken,
@@ -134,6 +141,7 @@ export class AuthService {
       role: role || Role.USER,
       displayName,
       status: registerDto.status || 'active',
+      modules: registerDto.modules || [],
     });
 
     const savedUser = await this.userRepository.save(newUser);
@@ -143,6 +151,7 @@ export class AuthService {
       user: {
         email: savedUser.email,
         role: savedUser.role,
+        modules: savedUser.modules || [],
       },
     };
   }

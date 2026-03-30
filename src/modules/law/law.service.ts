@@ -11,11 +11,24 @@ import { Role } from '../../decorators/roles.decorator';
 import { CreateLawyerDto, UpdateLawyerDto } from './dto/lawyer.dto';
 import { LawAppointment } from './entities/law-appointment.entity';
 import { LawApplication } from './entities/law-application.entity';
+import { LawSubmission } from './entities/law-submission.entity';
+import {
+  CreateLawSubmissionDto,
+  UpdateLawSubmissionStatusDto,
+} from './dto/law-submission.dto';
 import { CreateAppointmentDto, QuickBookingDto } from './dto/appointment.dto';
 import {
   CreateLawApplicationDto,
   UpdateLawApplicationDto,
 } from './dto/law-application.dto';
+import { LawArticle } from './entities/law-article.entity';
+import { CreateLawArticleDto } from './dto/create-law-article.dto';
+import { UpdateLawArticleDto } from './dto/update-law-article.dto';
+import { LawQuestion } from './entities/law-question.entity';
+import {
+  CreateLawQuestionDto,
+  AnswerLawQuestionDto,
+} from './dto/law-question.dto';
 
 @Injectable()
 export class LawService {
@@ -28,6 +41,12 @@ export class LawService {
     private appointmentRepository: Repository<LawAppointment>,
     @InjectRepository(LawApplication)
     private applicationRepository: Repository<LawApplication>,
+    @InjectRepository(LawSubmission)
+    private submissionRepository: Repository<LawSubmission>,
+    @InjectRepository(LawArticle)
+    private articleRepository: Repository<LawArticle>,
+    @InjectRepository(LawQuestion)
+    private questionRepository: Repository<LawQuestion>,
   ) {}
 
   async findAll() {
@@ -337,5 +356,139 @@ export class LawService {
   async removeApplication(id: string) {
     const app = await this.findOneApplication(id);
     return this.applicationRepository.remove(app);
+  }
+
+  // Submissions (Submitted Applications)
+  async findAllSubmissions() {
+    return this.submissionRepository.find({
+      relations: ['application', 'customer'],
+      order: { createdAt: 'DESC' },
+    });
+  }
+
+  async findMySubmissions(customerId: string) {
+    return this.submissionRepository.find({
+      where: { customerId },
+      relations: ['application'],
+      order: { createdAt: 'DESC' },
+    });
+  }
+
+  async findOneSubmission(id: string) {
+    const sub = await this.submissionRepository.findOne({
+      where: { id },
+      relations: ['application', 'customer'],
+    });
+    if (!sub) throw new NotFoundException('Submission not found');
+    return sub;
+  }
+
+  async createSubmission(customerId: string, dto: CreateLawSubmissionDto) {
+    const sub = this.submissionRepository.create({
+      ...dto,
+      customerId,
+      status: 'pending',
+    });
+    return this.submissionRepository.save(sub);
+  }
+
+  async updateSubmissionStatus(id: string, dto: UpdateLawSubmissionStatusDto) {
+    const sub = await this.findOneSubmission(id);
+    Object.assign(sub, dto);
+    return this.submissionRepository.save(sub);
+  }
+
+  async removeSubmission(id: string) {
+    const sub = await this.findOneSubmission(id);
+    return this.submissionRepository.remove(sub);
+  }
+
+  // Articles
+  async findAllArticles() {
+    return this.articleRepository.find({
+      order: { createdAt: 'DESC' },
+      relations: ['author'],
+    });
+  }
+
+  async findOneArticle(id: string) {
+    const article = await this.articleRepository.findOne({
+      where: { id },
+      relations: ['author'],
+    });
+    if (!article) throw new NotFoundException('Article not found');
+    return article;
+  }
+
+  async createArticle(dto: CreateLawArticleDto, authorId?: string) {
+    const article = this.articleRepository.create({
+      ...dto,
+      author: authorId ? ({ id: authorId } as User) : undefined,
+    });
+    return this.articleRepository.save(article);
+  }
+
+  async updateArticle(id: string, dto: UpdateLawArticleDto) {
+    const article = await this.findOneArticle(id);
+    Object.assign(article, dto);
+    return this.articleRepository.save(article);
+  }
+
+  async removeArticle(id: string) {
+    const article = await this.findOneArticle(id);
+    return this.articleRepository.remove(article);
+  }
+
+  async incrementArticleViews(id: string) {
+    const article = await this.findOneArticle(id);
+    article.views += 1;
+    return this.articleRepository.save(article);
+  }
+
+  // Questions (Q&A)
+  async createQuestion(customerId: string, dto: CreateLawQuestionDto) {
+    const question = this.questionRepository.create({
+      ...dto,
+      customer: { id: customerId } as User,
+      status: 'Pending',
+    });
+    return this.questionRepository.save(question);
+  }
+
+  async findAllQuestions() {
+    return this.questionRepository.find({
+      relations: ['customer', 'answeredBy'],
+      order: { createdAt: 'DESC' },
+    });
+  }
+
+  async findMyQuestions(customerId: string) {
+    return this.questionRepository.find({
+      where: { customer: { id: customerId } },
+      relations: ['answeredBy'],
+      order: { createdAt: 'DESC' },
+    });
+  }
+
+  async answerQuestion(
+    id: string,
+    lawyerId: string,
+    dto: AnswerLawQuestionDto,
+  ) {
+    const question = await this.questionRepository.findOne({ where: { id } });
+    if (!question) throw new NotFoundException('Question not found');
+
+    question.answer = dto.answer;
+    question.status = 'Answered';
+    question.answeredBy = { id: lawyerId } as User;
+    question.answeredAt = new Date();
+
+    return this.questionRepository.save(question);
+  }
+
+  async removeQuestion(id: string) {
+    const question = await this.questionRepository.findOne({ where: { id } });
+    if (!question) throw new NotFoundException('Question not found');
+    return this.questionRepository.remove(question);
   }
 }

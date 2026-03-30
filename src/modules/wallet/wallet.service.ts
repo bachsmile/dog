@@ -31,6 +31,7 @@ import {
   StorageAdjustmentType,
 } from './entities/storage-history.entity';
 import { AdjustStorageWalletDto } from './dto/adjust-storage.dto';
+import { SystemConfig } from './entities/system-config.entity';
 
 interface CreateSavingsDto {
   assetSymbol: string;
@@ -66,9 +67,34 @@ export class WalletService {
     private readonly storageWalletRepository: Repository<StorageWallet>,
     @InjectRepository(StorageHistory)
     private readonly storageHistoryRepository: Repository<StorageHistory>,
+    @InjectRepository(SystemConfig)
+    private systemConfigRepository: Repository<SystemConfig>,
     private readonly jwtService: JwtService,
     private readonly p2pService: P2pService,
   ) {}
+
+  async onModuleInit() {
+    const existingAddress = await this.getSystemValue('fz_contract_address');
+    if (!existingAddress) {
+      const defaultAddress = process.env.VITE_FZ_CONTRACT_ADDRESS || '0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9';
+      await this.setSystemValue('fz_contract_address', defaultAddress);
+    }
+  }
+
+  async getSystemValue(key: string): Promise<string | undefined> {
+    const config = await this.systemConfigRepository.findOne({ where: { key } });
+    return config ? config.value : undefined;
+  }
+
+  async setSystemValue(key: string, value: string): Promise<SystemConfig> {
+    let config = await this.systemConfigRepository.findOne({ where: { key } });
+    if (config) {
+      config.value = value;
+    } else {
+      config = this.systemConfigRepository.create({ key, value });
+    }
+    return this.systemConfigRepository.save(config);
+  }
 
   async setWalletPassword(
     userId: string,

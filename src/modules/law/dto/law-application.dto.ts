@@ -3,6 +3,7 @@ export class CreateLawApplicationDto {
   content: string;
   type?: string;
   config?: any;
+  documentBody?: string;
 }
 
 export class UpdateLawApplicationDto {
@@ -10,4 +11,5 @@ export class UpdateLawApplicationDto {
   content?: string;
   type?: string;
   config?: any;
+  documentBody?: string;
 }

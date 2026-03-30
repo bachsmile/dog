@@ -6,4 +6,7 @@ export class CreateUserDto {
   role?: Role;
   displayName?: string;
   status?: 'active' | 'suspended';
+  modules?: string[];
+  subscriptionPlan?: string;
+  subscriptionExpiresAt?: Date;
 }
