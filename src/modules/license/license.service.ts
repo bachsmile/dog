@@ -23,7 +23,6 @@ export class LicenseService {
     const matches = bytes.match(/.{1,4}/g);
     const licenseKey = matches ? matches.join('-') : bytes;
 
-    
     const newLicense = this.licenseRepository.create({
       licenseKey,
       expiresAt: new Date(expiresAt),
@@ -59,5 +58,27 @@ export class LicenseService {
     }
 
     return { isValid: true, license, message: 'License is valid' };
+  }
+
+  async update(id: string, data: Partial<License>): Promise<License> {
+    const license = await this.licenseRepository.findOne({
+      where: { id },
+    });
+    
+    if (!license) {
+      throw new NotFoundException('License not found');
+    }
+    
+    if (data.expiresAt) {
+      license.expiresAt = new Date(data.expiresAt);
+    }
+    if (data.metadata !== undefined) {
+      license.metadata = data.metadata;
+    }
+    if (data.isActive !== undefined) {
+      license.isActive = data.isActive;
+    }
+
+    return await this.licenseRepository.save(license);
   }
 }

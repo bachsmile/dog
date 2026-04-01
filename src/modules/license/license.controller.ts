@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Get } from '@nestjs/common';
+import { Controller, Post, Body, Get, Patch, Param } from '@nestjs/common';
 import { Public } from '../../decorators/public.decorator';
 
 
@@ -20,6 +20,16 @@ export class LicenseController {
     @Body('metadata') metadata?: string,
   ) {
     return this.licenseService.generate(expiresAt, metadata);
+  }
+
+  @Patch(':id')
+  async updateLicense(
+    @Param('id') id: string,
+    @Body('expiresAt') expiresAt?: Date,
+    @Body('metadata') metadata?: string,
+    @Body('isActive') isActive?: boolean,
+  ) {
+    return this.licenseService.update(id, { expiresAt, metadata, isActive });
   }
 
   @Public()
