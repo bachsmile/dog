@@ -50,7 +50,7 @@ export class LicenseService {
     const isExpired = license.expiresAt < now;
 
     if (!license.isActive) {
-      return { isValid: false, license, message: 'License is deactivated' };
+      return { isValid: false, license, message: 'Giấy phép đang bị đóng băng' };
     }
 
     if (isExpired) {
@@ -80,5 +80,17 @@ export class LicenseService {
     }
 
     return await this.licenseRepository.save(license);
+  }
+
+  async delete(id: string): Promise<void> {
+    const license = await this.licenseRepository.findOne({
+      where: { id },
+    });
+    
+    if (!license) {
+      throw new NotFoundException('License not found');
+    }
+
+    await this.licenseRepository.remove(license);
   }
 }

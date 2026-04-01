@@ -58,6 +58,12 @@ export class User {
   })
   loginCount: number;
 
+  @Column({
+    type: 'varchar',
+    default: 'en',
+  })
+  language: 'en' | 'vi';
+
   @CreateDateColumn()
   createdAt: Date;
 

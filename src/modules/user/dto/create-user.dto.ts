@@ -9,4 +9,5 @@ export class CreateUserDto {
   modules?: string[];
   subscriptionPlan?: string;
   subscriptionExpiresAt?: Date;
+  language?: 'en' | 'vi';
 }
