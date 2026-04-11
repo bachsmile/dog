@@ -8,6 +8,7 @@ import { WalletTransaction } from './entities/wallet-transaction.entity';
 import { StorageWallet } from './entities/storage-wallet.entity';
 import { StorageHistory } from './entities/storage-history.entity';
 import { SystemConfig } from './entities/system-config.entity';
+import { WalletLoan } from './entities/wallet-loan.entity';
 import { P2pModule } from '../p2p/p2p.module';
 
 @Module({
@@ -19,6 +20,7 @@ import { P2pModule } from '../p2p/p2p.module';
       StorageWallet,
       StorageHistory,
       SystemConfig,
+      WalletLoan,
     ]),
     P2pModule,
   ],

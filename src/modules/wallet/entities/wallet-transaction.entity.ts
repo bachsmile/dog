@@ -10,6 +10,10 @@ export enum TransactionType {
   DEPOSIT = 'deposit',
   WITHDRAW = 'withdraw',
   RECEIVE = 'receive',
+  LOAN = 'loan',
+  STAKING = 'staking',
+  UNSTAKING = 'unstaking',
+  SWAP = 'swap',
 }
 
 @Entity('wallet_transactions')
@@ -49,6 +53,18 @@ export class WalletTransaction {
 
   @Column({ nullable: true })
   source: string;
+
+  @Column({ nullable: true })
+  contractCode: string;
+
+  @Column('decimal', { precision: 20, scale: 8, default: 0 })
+  remainingQuantity: number;
+
+  @Column('decimal', { precision: 20, scale: 8, default: 0 })
+  stakedQuantity: number;
+
+  @Column('simple-json', { nullable: true })
+  lotWithdrawals: any;
 
   @CreateDateColumn()
   timestamp: Date;

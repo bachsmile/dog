@@ -67,6 +67,18 @@ export class User {
   @CreateDateColumn()
   createdAt: Date;
 
+  @Column({
+    type: 'varchar',
+    nullable: true,
+  })
+  managedById: string;
+
+  @Column({
+    type: 'int',
+    default: 10,
+  })
+  userQuota: number;
+
   @UpdateDateColumn()
   updatedAt: Date;
 }

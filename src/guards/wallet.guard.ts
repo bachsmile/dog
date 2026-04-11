@@ -42,7 +42,7 @@ export class WalletGuard implements CanActivate {
         | string
         | undefined;
 
-      if (assetSymbol && payload.assetSymbol !== assetSymbol) {
+      if (assetSymbol && assetSymbol !== 'ALL' && payload.assetSymbol !== assetSymbol) {
         throw new UnauthorizedException(
           `Mã bảo mật này dành cho ${payload.assetSymbol}, không phải ${assetSymbol}`,
         );

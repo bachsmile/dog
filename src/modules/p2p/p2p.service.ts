@@ -17,7 +17,7 @@ export class P2pService {
 
   private priceCache: Map<string, { price: number; timestamp: number }> =
     new Map();
-  private readonly CACHE_TTL = 300000; // 5 minutes
+  private readonly CACHE_TTL = 3600000; // 1 hour
 
   async getP2pPrices(query: P2pQueryDto): Promise<any> {
     try {

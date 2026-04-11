@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/no-unsafe-member-access */
+/* eslint-disable @typescript-eslint/no-unsafe-assignment */
 import {
   Injectable,
   UnauthorizedException,
@@ -5,7 +7,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DeepPartial } from 'typeorm';
+import { Repository, MoreThan } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import { JwtService } from '@nestjs/jwt';
 import { Cron } from '@nestjs/schedule';
@@ -20,7 +22,6 @@ import {
   SavingsType,
 } from './entities/wallet-savings.entity';
 import { CreateTransactionDto } from './dto/transaction.dto';
-import { CreateStorageWalletDto } from './dto/storage-wallet.dto';
 import { P2pService } from '../p2p/p2p.service';
 import {
   StorageWallet,
@@ -32,19 +33,9 @@ import {
 } from './entities/storage-history.entity';
 import { AdjustStorageWalletDto } from './dto/adjust-storage.dto';
 import { SystemConfig } from './entities/system-config.entity';
+import { WalletLoan, LoanStatus } from './entities/wallet-loan.entity';
 
-interface CreateSavingsDto {
-  assetSymbol: string;
-  quantity: number;
-  annualRate: number;
-  platform: string;
-  savingsType: SavingsType;
-  durationDays?: number;
-  note?: string;
-  storageId?: string;
-}
-
-interface WalletStatsEntry {
+export interface WalletStatsEntry {
   balance: number;
   receivedBalance: number;
   totalInvested: number;
@@ -69,6 +60,8 @@ export class WalletService {
     private readonly storageHistoryRepository: Repository<StorageHistory>,
     @InjectRepository(SystemConfig)
     private systemConfigRepository: Repository<SystemConfig>,
+    @InjectRepository(WalletLoan)
+    private walletLoanRepository: Repository<WalletLoan>,
     private readonly jwtService: JwtService,
     private readonly p2pService: P2pService,
   ) {}
@@ -76,13 +69,17 @@ export class WalletService {
   async onModuleInit() {
     const existingAddress = await this.getSystemValue('fz_contract_address');
     if (!existingAddress) {
-      const defaultAddress = process.env.VITE_FZ_CONTRACT_ADDRESS || '0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9';
+      const defaultAddress =
+        process.env.VITE_FZ_CONTRACT_ADDRESS ||
+        '0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9';
       await this.setSystemValue('fz_contract_address', defaultAddress);
     }
   }
 
   async getSystemValue(key: string): Promise<string | undefined> {
-    const config = await this.systemConfigRepository.findOne({ where: { key } });
+    const config = await this.systemConfigRepository.findOne({
+      where: { key },
+    });
     return config ? config.value : undefined;
   }
 
@@ -201,23 +198,164 @@ export class WalletService {
   }
 
   async createTransaction(userId: string, data: CreateTransactionDto) {
+    const qty = Number(data.quantity);
+    const price = Number(data.price) || 0;
+    const total = Number(data.total) || qty * price;
+
     const transaction = this.walletTransactionRepository.create({
       userId,
       ...data,
-      assetSymbol: data.assetSymbol, // Ensure symbol is mapped
+      assetSymbol: data.assetSymbol,
+      remainingQuantity: (data.type === TransactionType.DEPOSIT || data.type === TransactionType.RECEIVE) ? qty : 0,
     });
 
-    const saved = await this.walletTransactionRepository.save(transaction);
+    // --- Lot Management Logic for Deposits/Receives ---
+    if (data.type === TransactionType.DEPOSIT || data.type === TransactionType.RECEIVE) {
+      const inputCode = (data.contractCode || '').trim();
+      let finalCode: string | null =
+        inputCode && inputCode.toUpperCase() !== 'PENDING' ? inputCode : null;
+
+      if (!finalCode) {
+        // Find existing lot with same price to pool
+        const existingLot = await this.walletTransactionRepository.findOne({
+          where: {
+            userId,
+            assetSymbol: data.assetSymbol,
+            type: data.type, // Match the exact type (Deposit or Receive)
+            price: price,
+            remainingQuantity: MoreThan(0),
+          },
+          order: { timestamp: 'ASC' },
+        });
+
+        if (existingLot && existingLot.contractCode) {
+          finalCode = existingLot.contractCode;
+          transaction.contractCode = finalCode;
+          transaction.source = data.source
+            ? `${data.source} (Bổ sung lô ${finalCode})`
+            : `Bổ sung lô ${finalCode}`;
+        } else {
+          const displayPrice = Math.floor(price);
+          transaction.contractCode = `PK-${displayPrice}`;
+        }
+      } else {
+        transaction.contractCode = finalCode;
+        transaction.source = data.source
+          ? `${data.source} [Lô: ${finalCode}]`
+          : `[Lô: ${finalCode}]`;
+      }
+    }
+
+    // --- HIFO Logic for Withdrawals ---
+    if (
+      data.type === TransactionType.WITHDRAW ||
+      data.type === TransactionType.STAKING ||
+      data.type === TransactionType.SWAP ||
+      data.type === TransactionType.LOAN
+    ) {
+      const lots = await this.walletTransactionRepository
+        .createQueryBuilder('tx')
+        .where('tx.userId = :userId', { userId })
+        .andWhere('tx.assetSymbol = :symbol', { symbol: data.assetSymbol })
+        .andWhere('tx.type IN (:...types)', { types: [TransactionType.DEPOSIT, TransactionType.RECEIVE] })
+        .andWhere('tx.remainingQuantity > 0')
+        .orderBy('tx.price', 'DESC')
+        .addOrderBy('tx.timestamp', 'ASC')
+        .getMany();
+
+      let remainingToWithdraw = qty;
+      let totalCostBasis = 0;
+      const lotWithdrawals: Array<{
+        lotId: string;
+        contractCode: string;
+        quantityTaken: number;
+        lotPrice: number;
+        profit: number;
+      }> = [];
+
+      for (const lot of lots) {
+        if (remainingToWithdraw <= 0) break;
+
+        const taken = Math.min(
+          Number(lot.remainingQuantity),
+          remainingToWithdraw,
+        );
+        const lotPrice = Number(lot.price);
+        const lotProfit = taken * (price - lotPrice);
+
+        lot.remainingQuantity = Number(lot.remainingQuantity) - taken;
+
+        if (data.type === TransactionType.STAKING) {
+          lot.stakedQuantity = (Number(lot.stakedQuantity) || 0) + taken;
+        }
+
+        if (Number(lot.remainingQuantity) <= 0) {
+          lot.status = 'exhausted';
+        }
+        await this.walletTransactionRepository.save(lot);
+
+        lotWithdrawals.push({
+          lotId: lot.id,
+          contractCode: lot.contractCode || lot.id,
+          quantityTaken: taken,
+          lotPrice,
+          profit: lotProfit,
+        });
+
+        totalCostBasis += taken * lotPrice;
+        remainingToWithdraw -= taken;
+      }
+
+      transaction.lotWithdrawals = lotWithdrawals;
+      transaction.avgBuyPriceAtTime = qty > 0 ? totalCostBasis / qty : 0;
+      transaction.profitAmount =
+        data.type === TransactionType.STAKING
+          ? 0
+          : qty * price - totalCostBasis;
+    }
+
+    if (data.type === TransactionType.UNSTAKING && data.stakingTransactionId) {
+      const stakingTx = await this.walletTransactionRepository.findOne({
+        where: { id: data.stakingTransactionId, userId },
+      });
+      if (stakingTx && stakingTx.lotWithdrawals) {
+        for (const lw of stakingTx.lotWithdrawals as any[]) {
+          const lot = await this.walletTransactionRepository.findOne({
+            where: { id: lw.lotId },
+          });
+          if (lot) {
+            lot.stakedQuantity = Math.max(
+              0,
+              Number(lot.stakedQuantity) - Number(lw.quantityTaken),
+            );
+            lot.remainingQuantity =
+              Number(lot.remainingQuantity) + Number(lw.quantityTaken);
+            lot.status = 'active';
+            await this.walletTransactionRepository.save(lot);
+          }
+        }
+      }
+    }
+
+    let saved = await this.walletTransactionRepository.save(transaction);
+
+    // Final safety check for missing codes
+    if (
+      data.type === TransactionType.DEPOSIT &&
+      (!saved.contractCode || saved.contractCode.startsWith('DP-'))
+    ) {
+      const displayPrice = Math.floor(Number(saved.price || 0));
+      saved.contractCode = `PK-${displayPrice}`;
+      saved = await this.walletTransactionRepository.save(saved);
+    }
 
     // Auto-create VND transaction for crypto sales/purchases
     if (data.assetSymbol !== 'VND') {
-      const quantity = Number(data.quantity);
-      const price = Number(data.price) || 0;
-      const total = Number(data.total) || quantity * price;
-
-      // Case 1: SELL Crypto -> Deposit VND
-      // Only trigger if it's a real sale (price > 0)
-      if (data.type === TransactionType.WITHDRAW && price > 0) {
+      if (
+        (data.type === TransactionType.WITHDRAW ||
+          data.type === TransactionType.SWAP) &&
+        price > 0
+      ) {
         const vndDeposit = this.walletTransactionRepository.create({
           userId,
           assetSymbol: 'VND',
@@ -225,28 +363,26 @@ export class WalletService {
           quantity: total,
           price: 1,
           total: total,
-          source: `Bán ${quantity} ${data.assetSymbol} @ ${price}`,
+          remainingQuantity: total,
+          source: `Bán ${qty} ${data.assetSymbol} @ ${price}`,
           status: 'completed',
         });
         await this.walletTransactionRepository.save(vndDeposit);
       }
 
-      // Case 2: BUY Crypto from VND Source -> Withdraw VND
       if (
         data.type === TransactionType.DEPOSIT &&
         data.source?.toUpperCase() === 'VND'
       ) {
-        const vndWithdraw = this.walletTransactionRepository.create({
-          userId,
+        await this.createTransaction(userId, {
           assetSymbol: 'VND',
           type: TransactionType.WITHDRAW,
           quantity: total,
           price: 1,
           total: total,
-          source: `Mua ${quantity} ${data.assetSymbol} @ ${price}`,
+          source: `Mua ${qty} ${data.assetSymbol} @ ${price}`,
           status: 'completed',
         });
-        await this.walletTransactionRepository.save(vndWithdraw);
       }
     }
 
@@ -262,24 +398,10 @@ export class WalletService {
     const tx = await this.walletTransactionRepository.findOne({
       where: { id, userId, assetSymbol },
     });
-
     if (!tx) throw new NotFoundException('Giao dịch không tồn tại');
-
-    // Update with incoming data
     Object.assign(tx, data);
-
-    // Convert string inputs to Numbers if they came from JSON
-    if (data.quantity !== undefined) tx.quantity = Number(data.quantity);
-    if (data.price !== undefined) tx.price = Number(data.price);
-    if (data.total !== undefined) tx.total = Number(data.total);
-    if (data.avgBuyPriceAtTime !== undefined)
-      tx.avgBuyPriceAtTime = Number(data.avgBuyPriceAtTime);
-    if (data.profitAmount !== undefined)
-      tx.profitAmount = Number(data.profitAmount);
-
     return this.walletTransactionRepository.save(tx);
   }
-
 
   async getTransactions(userId: string, assetSymbol: string) {
     return this.walletTransactionRepository.find({
@@ -288,15 +410,642 @@ export class WalletService {
     });
   }
 
+  async getLots(userId: string, assetSymbol: string) {
+    const lots = await this.walletTransactionRepository.find({
+      where: {
+        userId,
+        assetSymbol,
+        type: TransactionType.DEPOSIT,
+      },
+      order: { price: 'DESC', timestamp: 'ASC' },
+    });
+
+    // Calculate realized profit per lot from withdrawals
+    const withdrawals = await this.walletTransactionRepository.find({
+      where: { userId, assetSymbol, type: TransactionType.WITHDRAW },
+    });
+
+    const lotProfits: Record<string, number> = {};
+    for (const w of withdrawals) {
+      if (w.lotWithdrawals && Array.isArray(w.lotWithdrawals)) {
+        for (const lw of w.lotWithdrawals as Array<{
+          lotId: string;
+          profit: number;
+        }>) {
+          lotProfits[lw.lotId] =
+            (lotProfits[lw.lotId] || 0) + Number(lw.profit || 0);
+        }
+      }
+    }
+
+    // Fix up any missing, legacy, or 'PENDING' codes and attach profit
+    for (const lot of lots) {
+      const displayPrice = Math.floor(Number(lot.price || 0));
+      const targetCode = `PK-${displayPrice}`;
+
+      if (
+        !lot.contractCode ||
+        lot.contractCode.toUpperCase() === 'PENDING' ||
+        lot.contractCode !== targetCode
+      ) {
+        lot.contractCode = targetCode;
+        await this.walletTransactionRepository.save(lot);
+      }
+
+      // Attach calculated profit
+      (lot as any).realizedProfit = lotProfits[lot.id] || 0;
+    }
+
+    return lots;
+  }
+
   async deleteTransaction(userId: string, assetSymbol: string, id: string) {
     const tx = await this.walletTransactionRepository.findOne({
       where: { id, userId, assetSymbol },
     });
-
     if (!tx) throw new NotFoundException('Giao dịch không tồn tại');
-
     await this.walletTransactionRepository.remove(tx);
     return { success: true };
+  }
+
+  async getStats(userId: string, symbol: string) {
+    const statsMap = await this.calculateStatsMap(userId, symbol);
+    return (
+      statsMap[symbol] || {
+        balance: 0,
+        receivedBalance: 0,
+        totalInvested: 0,
+        totalInvestedPortfolio: 0,
+        savingsBalance: 0,
+      }
+    );
+  }
+
+  async getPortfolioSummary(userId: string) {
+    const configs = await this.walletConfigRepository.find({
+      where: { userId },
+    });
+    const configMap = new Map(configs.map((c) => [c.assetSymbol, true]));
+    const statsMap = await this.calculateStatsMap(userId);
+    const assets: any[] = [];
+    let totalVndValue = 0;
+
+    for (const symbol in statsMap) {
+      const entry = statsMap[symbol];
+      const price = await this.p2pService.getAssetPriceInVnd(symbol);
+      const vndValue = (entry.totalBalance || 0) * price;
+      totalVndValue += vndValue;
+
+      assets.push({
+        symbol,
+        balance: entry.balance,
+        savingsBalance: entry.savingsBalance,
+        storageBalance: entry.storageBalance || 0,
+        totalBalance: entry.totalBalance || 0,
+        price,
+        vndValue,
+        hasPassword: configMap.has(symbol),
+      });
+    }
+
+    // Force inclusion of configured assets even if no balance
+    for (const config of configs) {
+      if (!statsMap[config.assetSymbol]) {
+        const price = await this.p2pService.getAssetPriceInVnd(
+          config.assetSymbol,
+        );
+        assets.push({
+          symbol: config.assetSymbol,
+          balance: 0,
+          savingsBalance: 0,
+          storageBalance: 0,
+          totalBalance: 0,
+          price,
+          vndValue: 0,
+          hasPassword: true,
+        });
+      }
+    }
+
+    return {
+      assets,
+      totalVndValue,
+      dailyPerformanceVnd: 0,
+      dailyPerformancePercent: 0,
+    };
+  }
+
+  async getGrowthStats(userId: string) {
+    const transactions = await this.walletTransactionRepository.find({
+      where: { userId },
+      order: { timestamp: 'ASC' },
+    });
+
+    const prices: Record<string, number> = {};
+    const assets = [...new Set(transactions.map((t) => t.assetSymbol))];
+    for (const sym of assets) {
+      prices[sym] = await this.p2pService.getAssetPriceInVnd(sym);
+    }
+
+    const history: Array<{ date: string; value: number }> = [];
+    const dailyBalances: Record<string, number> = {};
+    const daysToLookBack = 30;
+
+    const now = new Date();
+    const startDate = new Date();
+    startDate.setDate(now.getDate() - daysToLookBack);
+    startDate.setHours(0, 0, 0, 0);
+
+    // Initial balances before the start date
+    const preStartTxs = transactions.filter((t) => t.timestamp < startDate);
+    for (const tx of preStartTxs) {
+      if (!dailyBalances[tx.assetSymbol]) dailyBalances[tx.assetSymbol] = 0;
+      if (
+        tx.type === TransactionType.DEPOSIT ||
+        tx.type === TransactionType.RECEIVE
+      ) {
+        dailyBalances[tx.assetSymbol] += Number(tx.quantity);
+      } else if (tx.type === TransactionType.WITHDRAW) {
+        dailyBalances[tx.assetSymbol] -= Number(tx.quantity);
+      }
+    }
+
+    // Daily snapshots
+    for (let i = 0; i <= daysToLookBack; i++) {
+      const d = new Date(startDate);
+      d.setDate(d.getDate() + i);
+      const dateStr = d.toISOString().split('T')[0];
+
+      const dayTxs = transactions.filter(
+        (t) =>
+          t.timestamp >= d &&
+          t.timestamp < new Date(d.getTime() + 24 * 60 * 60 * 1000),
+      );
+
+      for (const tx of dayTxs) {
+        if (!dailyBalances[tx.assetSymbol]) dailyBalances[tx.assetSymbol] = 0;
+        if (
+          tx.type === TransactionType.DEPOSIT ||
+          tx.type === TransactionType.RECEIVE
+        ) {
+          dailyBalances[tx.assetSymbol] += Number(tx.quantity);
+        } else if (tx.type === TransactionType.WITHDRAW) {
+          dailyBalances[tx.assetSymbol] -= Number(tx.quantity);
+        }
+      }
+
+      let dailyTotalVnd = 0;
+      for (const sym in dailyBalances) {
+        dailyTotalVnd += dailyBalances[sym] * (prices[sym] || 0);
+      }
+
+      history.push({ date: dateStr, value: Math.floor(dailyTotalVnd) });
+    }
+
+    return history;
+  }
+
+  // --- LOANS ---
+  async getLoans(userId: string, assetSymbol: string) {
+    const where: any = { userId };
+    if (assetSymbol && assetSymbol.toUpperCase() !== 'ALL') {
+      where.assetSymbol = assetSymbol;
+    }
+    const loans = await this.walletLoanRepository.find({
+      where,
+      order: { createdAt: 'DESC' },
+    });
+
+    // Enrich with lot information if transaction ID exists
+    const enriched = await Promise.all(loans.map(async (loan) => {
+      if (loan.originalTransactionId) {
+        const tx = await this.walletTransactionRepository.findOne({
+          where: { id: loan.originalTransactionId },
+          select: ['lotWithdrawals']
+        });
+        return {
+          ...loan,
+          slots: tx?.lotWithdrawals?.map((w: any) => w.contractCode).join(', ') || '---'
+        };
+      }
+      return { ...loan, slots: '---' };
+    }));
+
+    return enriched;
+  }
+
+  async createLoan(
+    userId: string,
+    data: {
+      assetSymbol: string;
+      borrower: string;
+      amount: number;
+      hasInterest: boolean;
+      interestRate: number;
+    },
+  ) {
+    // Optionally create a transaction for the outgoing funds (withdraw style)
+    const loanTx = await this.createTransaction(userId, {
+      assetSymbol: data.assetSymbol,
+      type: TransactionType.LOAN,
+      quantity: data.amount,
+      price: data.assetSymbol === 'VND' ? 1 : 0,
+      total: data.amount,
+      source: `Cấp khoản vay: ${data.borrower}`,
+      status: 'completed',
+    });
+
+    const loan = this.walletLoanRepository.create({
+      userId,
+      ...data,
+      collected: 0,
+      originalTransactionId: loanTx.id,
+    });
+    return this.walletLoanRepository.save(loan);
+  }
+
+  async collectLoan(userId: string, id: string, amount: number) {
+    const loan = await this.walletLoanRepository.findOne({
+      where: { id, userId },
+    });
+    if (!loan) throw new NotFoundException('Khoản vay không tồn tại');
+
+    loan.collected = Number(loan.collected) + Number(amount);
+    if (loan.collected >= loan.amount) {
+      loan.collected = loan.amount;
+      loan.status = LoanStatus.COMPLETED;
+    }
+
+    // --- Restore Liquidity to Original Lots ---
+    let refillSlotCode = '---';
+    if (loan.originalTransactionId) {
+      const originTx = await this.walletTransactionRepository.findOne({
+        where: { id: loan.originalTransactionId },
+      });
+      if (originTx && originTx.lotWithdrawals) {
+        // Use the first lot's code for the RECEIVE transaction display
+        if (originTx.lotWithdrawals.length > 0) {
+          refillSlotCode = originTx.lotWithdrawals[0].contractCode;
+        }
+
+        let refillLeft = Number(amount);
+        for (const w of originTx.lotWithdrawals) {
+          if (refillLeft <= 0) break;
+          const lotId = String(w.lotId);
+          const take = Math.min(refillLeft, Number(w.quantity));
+          
+          if (take > 0) {
+            // Refill the lot using native increment for safety
+            await this.walletTransactionRepository.increment(
+              { id: lotId },
+              'remainingQuantity',
+              take
+            );
+            refillLeft -= take;
+          }
+        }
+      }
+    }
+
+    // Create a RECEIVE transaction for audit, with the correct slot code inherited
+    await this.createTransaction(userId, {
+      assetSymbol: loan.assetSymbol,
+      type: TransactionType.RECEIVE,
+      quantity: amount,
+      price: loan.assetSymbol === 'VND' ? 1 : 0,
+      total: amount,
+      source: `Thu hồi nợ: ${loan.borrower} (Hoàn trả lô gốc)`,
+      contractCode: refillSlotCode, // Inherit the original lot code
+      status: 'completed',
+    });
+
+    return this.walletLoanRepository.save(loan);
+  }
+
+  async getSavings(userId: string) {
+    return this.walletSavingsRepository.find({
+      where: { userId, status: SavingsStatus.ACTIVE },
+    });
+  }
+
+  async createSavings(
+    userId: string,
+    data: {
+      assetSymbol: string;
+      quantity: number;
+      annualRate: number;
+      platform: string;
+      savingsType: SavingsType;
+      durationDays?: number;
+      note?: string;
+      storageId?: string;
+    },
+  ) {
+    const {
+      assetSymbol,
+      quantity,
+      annualRate,
+      platform,
+      savingsType,
+      durationDays,
+      note,
+      storageId,
+    } = data;
+
+    // 1. Check source and deduct funds
+    if (storageId) {
+      // Deduct from storage wallet
+      await this.adjustStorageWallet(userId, storageId, {
+        amount: quantity,
+        type: StorageAdjustmentType.DECREASE,
+        note: `Chuyển sang gửi lãi - ${platform}`,
+      });
+    } else {
+      // Deduct from main wallet
+    }
+    const transaction = await this.createTransaction(userId, {
+      assetSymbol,
+      type: TransactionType.STAKING,
+      quantity,
+      price: 0,
+      total: 0,
+      source: `Gửi lãi - ${platform}`,
+      status: 'completed',
+    });
+
+    const savings = this.walletSavingsRepository.create({
+      userId,
+      assetSymbol,
+      quantity,
+      annualRate,
+      platform,
+      savingsType,
+      note,
+      status: SavingsStatus.ACTIVE,
+      startDate: new Date(),
+      stakingTransactionId: transaction.id,
+    } as WalletSavings);
+
+    if (savingsType === SavingsType.FIXED && durationDays) {
+      const endDate = new Date();
+      endDate.setDate(endDate.getDate() + Number(durationDays));
+      savings.endDate = endDate;
+    }
+
+    return this.walletSavingsRepository.save(savings);
+  }
+
+  async withdrawSavings(userId: string, id: string) {
+    const savings = await this.walletSavingsRepository.findOne({
+      where: { id, userId, status: SavingsStatus.ACTIVE },
+    });
+    if (!savings) throw new NotFoundException('Khoản tiết kiệm không tồn tại');
+
+    // Withdraw staking (if exists)
+    if (savings.stakingTransactionId) {
+      await this.createTransaction(userId, {
+        assetSymbol: savings.assetSymbol,
+        type: TransactionType.UNSTAKING,
+        quantity: savings.quantity,
+        price: 0,
+        total: 0,
+        source: `Rút gửi lãi - ${savings.platform}`,
+        status: 'completed',
+        stakingTransactionId: savings.stakingTransactionId,
+      });
+    } else {
+      // Legacy support: Just add back to main wallet
+      await this.createTransaction(userId, {
+        assetSymbol: savings.assetSymbol,
+        type: TransactionType.DEPOSIT,
+        quantity: savings.quantity,
+        price: 0,
+        total: 0,
+        source: `Rút gửi lãi - ${savings.platform}`,
+        status: 'completed',
+      });
+    }
+
+    savings.status = SavingsStatus.COMPLETED;
+    await this.walletSavingsRepository.save(savings);
+
+    return { success: true };
+  }
+
+  async getSavingsSummary(userId: string) {
+    const savings = await this.getSavings(userId);
+    const details = savings.map((s) => ({
+      ...s,
+      dailyProfitVnd:
+        Number(s.quantity) * (Number(s.annualRate) / 100 / 365) * 24000, // Approximate
+    }));
+    return { details };
+  }
+
+  async deleteSavings(userId: string, id: string) {
+    const s = await this.walletSavingsRepository.findOne({
+      where: { id, userId },
+    });
+    if (!s) throw new NotFoundException();
+    await this.walletSavingsRepository.remove(s);
+    return { success: true };
+  }
+
+  @Cron('0 7 * * *')
+  async processFlexibleInterest() {
+    const activeSavings = await this.walletSavingsRepository.find({
+      where: {
+        savingsType: SavingsType.FLEXIBLE,
+        status: SavingsStatus.ACTIVE,
+      },
+    });
+    for (const s of activeSavings) {
+      const interest =
+        Number(s.quantity) * (Number(s.annualRate) / 100 / 365 / 24); // 1 hour interest
+      s.quantity = Number(s.quantity) + interest;
+      await this.walletSavingsRepository.save(s);
+    }
+  }
+
+  @Cron('0 23 * * *')
+  async processFixedMaturity() {
+    // Simplified trigger
+  }
+
+  async getStorageWallets(userId: string) {
+    return this.storageWalletRepository.find({
+      where: { userId, status: StorageWalletStatus.ACTIVE },
+    });
+  }
+
+  async createStorageWallet(
+    userId: string,
+    data: {
+      assetSymbol: string;
+      quantity: number;
+      platform: string;
+      note?: string;
+    },
+  ) {
+    const { assetSymbol, quantity, platform, note } = data;
+
+    // 1. Deduct from main wallet
+    await this.createTransaction(userId, {
+      assetSymbol,
+      type: TransactionType.WITHDRAW,
+      quantity,
+      price: 0,
+      total: 0,
+      source: `Chuyển vào ví lưu trữ - ${platform}`,
+      status: 'completed',
+    });
+
+    const wallet = this.storageWalletRepository.create({
+      userId,
+      assetSymbol,
+      quantity,
+      platform,
+      note,
+      initialQuantity: quantity,
+      status: StorageWalletStatus.ACTIVE,
+    });
+    return this.storageWalletRepository.save(wallet);
+  }
+
+  async withdrawFromStorage(userId: string, storageId: string) {
+    const wallet = await this.storageWalletRepository.findOne({
+      where: { id: storageId, userId },
+    });
+    if (!wallet) throw new NotFoundException();
+
+    // Add back to main wallet
+    await this.createTransaction(userId, {
+      assetSymbol: wallet.assetSymbol,
+      type: TransactionType.DEPOSIT,
+      quantity: wallet.quantity,
+      price: 0,
+      total: 0,
+      source: `Rút từ ví lưu trữ - ${wallet.platform}`,
+      status: 'completed',
+    });
+
+    await this.storageWalletRepository.remove(wallet);
+    return { success: true };
+  }
+
+  async adjustStorageWallet(
+    userId: string,
+    id: string,
+    dto: AdjustStorageWalletDto,
+  ) {
+    const wallet = await this.storageWalletRepository.findOne({
+      where: { id, userId },
+    });
+    if (!wallet) throw new NotFoundException('Ví không tồn tại');
+
+    const amount = Number(dto.amount);
+    if (dto.type === StorageAdjustmentType.INCREASE) {
+      wallet.quantity = Number(wallet.quantity) + amount;
+    } else if (dto.type === StorageAdjustmentType.DECREASE) {
+      if (Number(wallet.quantity) < amount) {
+        throw new BadRequestException('Số dư ví lưu trữ không đủ');
+      }
+      wallet.quantity = Number(wallet.quantity) - amount;
+    }
+
+    const history = this.storageHistoryRepository.create({
+      storageWalletId: id,
+      type: dto.type,
+      amount: amount,
+      balanceAfter: wallet.quantity,
+      note: dto.note,
+    });
+
+    await this.storageHistoryRepository.save(history);
+    return this.storageWalletRepository.save(wallet);
+  }
+
+  async getStorageHistory(userId: string, id: string) {
+    return this.storageHistoryRepository.find({
+      where: { storageWalletId: id },
+    });
+  }
+
+  async updateInitialQuantity(userId: string, id: string, qty: number) {
+    const w = await this.storageWalletRepository.findOne({
+      where: { id, userId },
+    });
+    if (!w) throw new NotFoundException();
+    w.initialQuantity = qty;
+    return this.storageWalletRepository.save(w);
+  }
+
+  async deleteStorageWallet(userId: string, id: string) {
+    const w = await this.storageWalletRepository.findOne({
+      where: { id, userId },
+    });
+    if (w) await this.storageWalletRepository.remove(w);
+    return { success: true };
+  }
+
+  async deleteStorageHistory(userId: string, id: string) {
+    const h = await this.storageHistoryRepository.findOne({ where: { id } });
+    if (h) await this.storageHistoryRepository.remove(h);
+    return { success: true };
+  }
+
+  async updateStorageHistory(userId: string, id: string, dto: any) {
+    const h = await this.storageHistoryRepository.findOne({ where: { id } });
+    if (!h) throw new NotFoundException();
+    Object.assign(h, dto);
+    return this.storageHistoryRepository.save(h);
+  }
+
+  async clearAllWalletData(userId: string) {
+    await this.walletTransactionRepository.delete({ userId });
+    await this.walletSavingsRepository.delete({ userId });
+    await this.storageWalletRepository.delete({ userId });
+    await this.walletConfigRepository.delete({ userId });
+    return { success: true };
+  }
+
+  async importTransactions(userId: string, transactions: WalletTransaction[]) {
+    for (const tx of transactions) {
+      const data = this.walletTransactionRepository.create({ ...tx, userId });
+      (data as any).id = undefined;
+      await this.walletTransactionRepository.save(data);
+    }
+    return { success: true, count: transactions.length };
+  }
+
+  async importSavings(userId: string, savings: WalletSavings[]) {
+    for (const s of savings) {
+      const data = this.walletSavingsRepository.create({ ...s, userId });
+      delete (data as any).id;
+      await this.walletSavingsRepository.save(data);
+    }
+    return { success: true, count: savings.length };
+  }
+
+  async importStorage(userId: string, storage: StorageWallet[]) {
+    for (const w of storage) {
+      const data = this.storageWalletRepository.create({ ...w, userId });
+      delete (data as any).id;
+      await this.storageWalletRepository.save(data);
+    }
+    return { success: true, count: storage.length };
+  }
+
+  async faucet(userId: string, symbol: string) {
+    return this.createTransaction(userId, {
+      assetSymbol: symbol,
+      type: TransactionType.DEPOSIT,
+      quantity: 1000,
+      price: symbol === 'VND' ? 1 : 25000,
+      total: symbol === 'VND' ? 1000 : 25000000,
+      source: 'FAUCET',
+      status: 'completed',
+    });
   }
 
   private async calculateStatsMap(userId: string, symbol?: string) {
@@ -304,12 +1053,9 @@ export class WalletService {
       .createQueryBuilder('tx')
       .where('tx.userId = :userId', { userId });
 
-    if (symbol) {
-      query.andWhere('tx.assetSymbol = :symbol', { symbol });
-    }
+    if (symbol) query.andWhere('tx.assetSymbol = :symbol', { symbol });
 
     const transactions = await query.orderBy('tx.timestamp', 'ASC').getMany();
-
     const statsMap: Record<string, WalletStatsEntry> = {};
 
     for (const tx of transactions) {
@@ -320,55 +1066,27 @@ export class WalletService {
           totalInvested: 0,
           totalInvestedPortfolio: 0,
           savingsBalance: 0,
+          storageBalance: 0,
+          totalBalance: 0,
         };
       }
-
       const entry = statsMap[tx.assetSymbol];
-      const quantity = Number(tx.quantity);
-      const source = tx.source || '';
-      // Identify internal savings transfers based on transaction source strings
-      const isSavingsRelated =
-        source.startsWith('Gửi lãi') ||
-        source.startsWith('Rút gửi') ||
-        source.startsWith('Đáo hạn') ||
-        source.startsWith('Chuyển vào ví lưu trữ') ||
-        source.startsWith('Rút từ ví lưu trữ');
-
-      if (tx.type === TransactionType.DEPOSIT) {
-        entry.balance += quantity;
-        entry.totalInvested += Number(tx.total);
-        // Add to portfolio basis ONLY if it's a real new deposit/buy, not a return from savings
-        if (!isSavingsRelated) {
-          entry.totalInvestedPortfolio += Number(tx.total);
-        }
-      } else if (tx.type === TransactionType.RECEIVE) {
-        // Savings interest is compounded directly into s.quantity (savingsBalance),
-        // so we record it here for history/profit tracking (receivedBalance)
-        // but DON'T add it to wallet balance (balance) to avoid double counting.
-        const isSavingsInterest = source.startsWith('Nhận lãi linh hoạt');
-        if (!isSavingsInterest) {
-          entry.balance += quantity;
-        }
-        entry.receivedBalance += quantity;
-      } else if (tx.type === TransactionType.WITHDRAW) {
-        entry.balance -= quantity;
-        if (tx.status !== 'locked') {
-          const avgPrice = tx.avgBuyPriceAtTime || 0;
-          entry.totalInvestedPortfolio -= quantity * avgPrice;
-          entry.totalInvested -= quantity * avgPrice;
-        }
-      }
+      if (
+        tx.type === TransactionType.DEPOSIT ||
+        tx.type === TransactionType.RECEIVE ||
+        tx.type === TransactionType.UNSTAKING
+      )
+        entry.balance += Number(tx.quantity);
+      else if (
+        tx.type === TransactionType.WITHDRAW ||
+        tx.type === TransactionType.STAKING ||
+        tx.type === TransactionType.SWAP
+      )
+        entry.balance -= Number(tx.quantity);
     }
 
-    // Adjust for active savings and storage wallets
-    const [activeSavings, activeStorageWallets] = await Promise.all([
-      this.walletSavingsRepository.find({
-        where: { userId, status: SavingsStatus.ACTIVE },
-      }),
-      this.getStorageWallets(userId),
-    ]);
-
-    for (const s of activeSavings) {
+    const savings = await this.getSavings(userId);
+    for (const s of savings) {
       if (!statsMap[s.assetSymbol]) {
         statsMap[s.assetSymbol] = {
           balance: 0,
@@ -376,14 +1094,15 @@ export class WalletService {
           totalInvested: 0,
           totalInvestedPortfolio: 0,
           savingsBalance: 0,
+          storageBalance: 0,
+          totalBalance: 0,
         };
       }
-      if (!s.storageId) {
-        statsMap[s.assetSymbol].savingsBalance += Number(s.quantity);
-      }
+      statsMap[s.assetSymbol].savingsBalance += Number(s.quantity);
     }
 
-    for (const w of activeStorageWallets) {
+    const storage = await this.getStorageWallets(userId);
+    for (const w of storage) {
       if (!statsMap[w.assetSymbol]) {
         statsMap[w.assetSymbol] = {
           balance: 0,
@@ -392,815 +1111,21 @@ export class WalletService {
           totalInvestedPortfolio: 0,
           savingsBalance: 0,
           storageBalance: 0,
+          totalBalance: 0,
         };
       }
       const entry = statsMap[w.assetSymbol];
       entry.storageBalance = (entry.storageBalance || 0) + Number(w.quantity);
-      // Ensure initial capital is tracked in basis if no other transactions exist
-      if (entry.totalInvestedPortfolio === 0 && Number(w.initialQuantity) > 0) {
-        // Fallback for manual storage wallets: treat initial as cost
-        // Note: For USDT, we assume price 1. For others, we might want to store cost basis.
-        // For now, let's keep it simple.
-      }
     }
 
-    // Post-process to fix receivedBalance clamping and add total
-    for (const symbol in statsMap) {
-      const entry = statsMap[symbol];
-      const storageBalance = entry.storageBalance || 0;
-      const combinedBalance =
-        Number(entry.balance) +
+    for (const sym in statsMap) {
+      const entry = statsMap[sym];
+      entry.totalBalance =
+        Number(entry.balance || 0) +
         Number(entry.savingsBalance || 0) +
-        Number(storageBalance);
-
-      // Clamping receivedBalance to combinedBalance (total ownership)
-      entry.receivedBalance = Math.min(entry.receivedBalance, combinedBalance);
-
-      entry.totalBalance = combinedBalance;
+        Number(entry.storageBalance || 0);
     }
 
     return statsMap;
-  }
-
-  async getSavings(userId: string, assetSymbol?: string) {
-    return this.walletSavingsRepository.find({
-      where: assetSymbol ? { userId, assetSymbol } : { userId },
-      order: { createdAt: 'DESC' },
-    });
-  }
-
-  async createSavings(userId: string, data: CreateSavingsDto) {
-    if (data.storageId) {
-      const storageWallet = await this.storageWalletRepository.findOne({
-        where: {
-          id: data.storageId,
-          userId,
-          status: StorageWalletStatus.ACTIVE,
-        },
-      });
-      if (!storageWallet)
-        throw new NotFoundException('Ví lưu trữ không tồn tại');
-      if (storageWallet.quantity < Number(data.quantity)) {
-        throw new BadRequestException('Số dư ví lưu trữ không đủ để gửi lãi');
-      }
-
-      // Record history in storage wallet instead of transaction in main wallet
-      const history = this.storageHistoryRepository.create({
-        storageWalletId: data.storageId,
-        type: StorageAdjustmentType.STAKE,
-        amount: Number(data.quantity),
-        balanceAfter: Number(storageWallet.quantity), // Balance remains unchanged (Total Balance)
-        note: `Đang gửi lãi - ${data.platform}`,
-      });
-      await this.storageHistoryRepository.save(history);
-    } else {
-      const stats = await this.getStats(userId, data.assetSymbol);
-      if (stats.balance < Number(data.quantity)) {
-        throw new BadRequestException('Số dư không đủ để gửi lãi');
-      }
-
-      // Create a withdrawal transaction to reflect moving funds to savings
-      await this.createTransaction(userId, {
-        assetSymbol: data.assetSymbol,
-        type: TransactionType.WITHDRAW,
-        quantity: Number(data.quantity),
-        price: 0,
-        total: 0,
-        source: `Gửi lãi ${data.savingsType === SavingsType.FLEXIBLE ? 'linh hoạt' : `cố định ${data.durationDays} ngày`} - ${data.platform}`,
-        status: 'locked',
-      });
-    }
-
-    const now = new Date();
-    const savings = new WalletSavings();
-    savings.userId = userId;
-    savings.assetSymbol = data.assetSymbol;
-    savings.quantity = Number(data.quantity);
-    savings.accruedInterest = 0;
-    savings.annualRate = Number(data.annualRate);
-    savings.platform = data.platform;
-    savings.savingsType = data.savingsType;
-    savings.durationDays =
-      data.savingsType === SavingsType.FIXED ? (data.durationDays ?? 0) : 0;
-    savings.note = data.note || '';
-    savings.status = SavingsStatus.ACTIVE;
-    savings.lastInterestDate = now;
-
-    if (data.savingsType === SavingsType.FIXED && data.durationDays) {
-      const startCalcDate = new Date(now);
-      startCalcDate.setHours(23, 0, 0, 0);
-      if (now.getHours() >= 23) {
-        startCalcDate.setDate(startCalcDate.getDate() + 1);
-      }
-      savings.endDate = new Date(
-        startCalcDate.getTime() + data.durationDays * 24 * 60 * 60 * 1000,
-      );
-    } else {
-      savings.endDate = null as unknown as Date;
-    }
-
-    if (data.storageId) {
-      savings.storageId = data.storageId;
-    }
-
-    return this.walletSavingsRepository.save(savings);
-  }
-
-  /**
-   * Cron: Gọi lúc 7:00 sáng hàng ngày
-   * Linh hoạt: Cộng lãi vào thẳng số tiền gửi (compound interest)
-   */
-  @Cron('0 7 * * *')
-  async processFlexibleInterest() {
-    const now = new Date();
-    const activeSavings = await this.walletSavingsRepository.find({
-      where: {
-        savingsType: SavingsType.FLEXIBLE,
-        status: SavingsStatus.ACTIVE,
-      },
-    });
-
-    for (const s of activeSavings) {
-      const lastPayout = s.lastInterestDate
-        ? new Date(s.lastInterestDate)
-        : new Date(s.startDate);
-      const diffMs = now.getTime() - lastPayout.getTime();
-      const diffHours = diffMs / (1000 * 60 * 60);
-
-      const qty = Number(s.quantity);
-      const dailyRate = Number(s.annualRate) / 100 / 365;
-      const hourlyRate = dailyRate / 24;
-      const interest = qty * hourlyRate * diffHours;
-
-      console.log(
-        `[Cron] Asset: ${s.assetSymbol}, DiffHours: ${diffHours}, Interest: ${interest}`,
-      );
-
-      if (interest <= 0) continue;
-
-      // Update savings record (compound interest into principal)
-      s.quantity = qty + interest;
-      s.accruedInterest = Number(s.accruedInterest) + interest;
-      s.lastDailyInterest = interest;
-      s.lastInterestDate = now;
-
-      await this.walletSavingsRepository.save(s);
-
-      // Record interest as a 'RECEIVE' transaction in history
-      await this.createTransaction(s.userId, {
-        assetSymbol: s.assetSymbol,
-        type: TransactionType.RECEIVE,
-        quantity: interest,
-        price: 0,
-        total: 0,
-        source: `Nhận lãi linh hoạt - ${s.platform}`,
-      });
-    }
-
-    return { processed: activeSavings.length };
-  }
-
-  /**
-   * Cron: Gọi lúc 23:00 hàng ngày
-   * Cố định: Kiểm tra nếu đã đến hạn, cộng lãi + chuyển về ví
-   */
-  @Cron('0 23 * * *')
-  async processFixedMaturity() {
-    const now = new Date();
-    const activeSavings = await this.walletSavingsRepository.find({
-      where: { savingsType: SavingsType.FIXED, status: SavingsStatus.ACTIVE },
-    });
-
-    let processed = 0;
-
-    for (const s of activeSavings) {
-      if (!s.endDate || now < new Date(s.endDate)) continue;
-
-      // Calculate total interest for fixed period
-      const qty = Number(s.quantity);
-      const days = s.durationDays || 0;
-      const totalInterest = qty * (Number(s.annualRate) / 100 / 365) * days;
-
-      // Remove the record since it's completed and returned to wallet
-      await this.walletSavingsRepository.remove(s);
-
-      // Deposit principal back to wallet (if not from storage)
-      const principal = qty;
-      if (s.storageId) {
-        const wallet = await this.storageWalletRepository.findOne({
-          where: { id: s.storageId },
-        });
-
-        if (wallet) {
-          // Principal was already in wallet.quantity, only increase for interest
-          const interestVal = Number(totalInterest);
-          wallet.quantity = Number(wallet.quantity) + interestVal;
-          await this.storageWalletRepository.save(wallet);
-
-          // History for Unstake (Principal)
-          await this.storageHistoryRepository.save(
-            this.storageHistoryRepository.create({
-              storageWalletId: s.storageId,
-              type: StorageAdjustmentType.UNSTAKE,
-              amount: principal,
-              balanceAfter: Number(wallet.quantity) - interestVal,
-              note: `Đáo hạn (Gốc) - ${s.platform}`,
-            }),
-          );
-
-          // History for Profit (Interest)
-          if (interestVal > 0) {
-            await this.storageHistoryRepository.save(
-              this.storageHistoryRepository.create({
-                storageWalletId: s.storageId,
-                type: StorageAdjustmentType.INCREASE,
-                amount: interestVal,
-                balanceAfter: Number(wallet.quantity),
-                note: `Đáo hạn (Lãi) - ${s.platform}`,
-              }),
-            );
-          }
-        }
-      } else {
-        await this.createTransaction(s.userId, {
-          assetSymbol: s.assetSymbol,
-          type: TransactionType.DEPOSIT,
-          quantity: principal,
-          price: 0,
-          total: 0,
-          source: `Đáo hạn gửi cố định ${days} ngày - ${s.platform} (Gốc)`,
-          status: 'locked',
-        });
-
-        // Record interest as RECEIVED if > 0
-        if (totalInterest > 0) {
-          await this.createTransaction(s.userId, {
-            assetSymbol: s.assetSymbol,
-            type: TransactionType.RECEIVE,
-            quantity: totalInterest,
-            price: 0,
-            total: 0,
-            source: `Đáo hạn gửi cố định ${days} ngày - ${s.platform} (Lãi)`,
-          });
-        }
-      }
-
-      processed++;
-    }
-
-    return { processed };
-  }
-
-  /**
-   * Rút tiền gửi linh hoạt về ví
-   */
-  async withdrawSavings(userId: string, savingsId: string) {
-    const savings = await this.walletSavingsRepository.findOne({
-      where: { id: savingsId, userId, status: SavingsStatus.ACTIVE },
-    });
-
-    if (!savings) {
-      throw new NotFoundException('Sổ gửi không tồn tại hoặc đã hoàn thành');
-    }
-
-    let accruedInterest = 0;
-
-    if (savings.savingsType === SavingsType.FLEXIBLE) {
-      accruedInterest = Number(savings.accruedInterest);
-    }
-
-    const totalAmount = Number(savings.quantity);
-    const principal = totalAmount - accruedInterest;
-
-    // Delete the record
-    await this.walletSavingsRepository.remove(savings);
-
-    // Deposit principal back to wallet or storage
-    if (savings.storageId) {
-      const wallet = await this.storageWalletRepository.findOne({
-        where: { id: savings.storageId },
-      });
-
-      if (wallet) {
-        const interestVal = Number(accruedInterest);
-        wallet.quantity = Number(wallet.quantity) + interestVal;
-        await this.storageWalletRepository.save(wallet);
-
-        // History for Unstake (Principal)
-        await this.storageHistoryRepository.save(
-          this.storageHistoryRepository.create({
-            storageWalletId: savings.storageId,
-            type: StorageAdjustmentType.UNSTAKE,
-            amount: principal,
-            balanceAfter: Number(wallet.quantity) - interestVal,
-            note: `Rút gửi linh hoạt (Gốc) - ${savings.platform}`,
-          }),
-        );
-
-        // History for Profit (Interest)
-        if (interestVal > 0) {
-          await this.storageHistoryRepository.save(
-            this.storageHistoryRepository.create({
-              storageWalletId: savings.storageId,
-              type: StorageAdjustmentType.INCREASE,
-              amount: interestVal,
-              balanceAfter: Number(wallet.quantity),
-              note: `Rút gửi linh hoạt (Lãi) - ${savings.platform}`,
-            }),
-          );
-        }
-      }
-    } else {
-      await this.createTransaction(userId, {
-        assetSymbol: savings.assetSymbol,
-        type: TransactionType.DEPOSIT,
-        quantity: principal,
-        price: 0,
-        total: 0,
-        source: `Rút gửi linh hoạt - ${savings.platform} (Gốc)`,
-        status: 'locked',
-      });
-
-      // Record interest as RECEIVED if > 0
-      if (accruedInterest > 0) {
-        await this.createTransaction(userId, {
-          assetSymbol: savings.assetSymbol,
-          type: TransactionType.RECEIVE,
-          quantity: accruedInterest,
-          price: 0,
-          total: 0,
-          source: `Rút gửi linh hoạt - ${savings.platform} (Lãi)`,
-        });
-      }
-    }
-
-    return {
-      success: true,
-      totalAmount,
-      accruedInterest: accruedInterest,
-    };
-  }
-
-  async deleteSavings(userId: string, id: string) {
-    const savings = await this.walletSavingsRepository.findOne({
-      where: { id, userId },
-    });
-    if (!savings) {
-      throw new NotFoundException('Sổ gửi không tồn tại');
-    }
-    await this.walletSavingsRepository.remove(savings);
-    return { success: true };
-  }
-
-  async getSavingsSummary(userId: string) {
-    const savings = await this.getSavings(userId);
-    const activeSavings = savings.filter(
-      (s) => s.status === SavingsStatus.ACTIVE,
-    );
-
-    let totalVndValue = 0;
-    let totalProfitEstimate = 0; // Simplified daily profit
-
-    const details: Array<
-      WalletSavings & { vndValue: number; dailyProfitVnd: number }
-    > = [];
-
-    for (const s of activeSavings) {
-      const price = await this.p2pService.getAssetPriceInVnd(s.assetSymbol);
-      const vndValue = Number(s.quantity) * price;
-      totalVndValue += vndValue;
-
-      // Estimate daily profit: (Qty * Rate / 100) / 365
-      const dailyProfit =
-        (Number(s.quantity) * (Number(s.annualRate) / 100)) / 365;
-      totalProfitEstimate += dailyProfit * price;
-
-      details.push({
-        ...s,
-        vndValue,
-        dailyProfitVnd: dailyProfit * price,
-      });
-    }
-
-    return {
-      totalVndValue,
-      totalProfitEstimateVnd: totalProfitEstimate,
-      count: activeSavings.length,
-      details,
-    };
-  }
-
-  async getStats(userId: string, assetSymbol: string) {
-    const statsMap = await this.calculateStatsMap(userId, assetSymbol);
-    const stats: WalletStatsEntry = statsMap[assetSymbol] || {
-      balance: 0,
-      receivedBalance: 0,
-      totalInvested: 0,
-      totalInvestedPortfolio: 0,
-      savingsBalance: 0,
-    };
-
-    if (stats.balance < 0) stats.balance = 0;
-    if (stats.totalInvested < 0) stats.totalInvested = 0;
-    if (stats.totalInvestedPortfolio < 0) stats.totalInvestedPortfolio = 0;
-
-    return {
-      assetSymbol,
-      ...stats,
-    };
-  }
-
-  async getPortfolioSummary(userId: string) {
-    const assetsMap = await this.calculateStatsMap(userId);
-
-    const summary: {
-      symbol: string;
-      balance: number;
-      savingsBalance: number;
-      storageBalance: number;
-      receivedBalance: number;
-      totalBalance: number | undefined;
-      vndValue: number;
-      price: number;
-      change24h: number;
-    }[] = [];
-    let totalVndValue = 0;
-    let totalVndValueYesterday = 0;
-
-    for (const symbol in assetsMap) {
-      const entry = assetsMap[symbol];
-      if (entry.balance <= 0 && entry.savingsBalance <= 0 && symbol !== 'VND')
-        continue;
-
-      const price = await this.p2pService.getAssetPriceInVnd(symbol);
-      const change24h = await this.p2pService.getAsset24hChange(symbol);
-      const storageBalance = entry.storageBalance || 0;
-      const totalBalance =
-        Number(entry.balance) +
-        Number(entry.savingsBalance || 0) +
-        Number(storageBalance);
-      const vndValue = totalBalance * price;
-
-      // Calculate yesterday's value for this asset
-      const yesterdayVndValue = vndValue / (1 + change24h / 100);
-
-      totalVndValue += vndValue;
-      totalVndValueYesterday += yesterdayVndValue;
-
-      summary.push({
-        symbol,
-        balance: entry.balance,
-        savingsBalance: entry.savingsBalance,
-        storageBalance: entry.storageBalance || 0,
-        receivedBalance: entry.receivedBalance || 0,
-        totalBalance: entry.totalBalance,
-        vndValue,
-        price,
-        change24h,
-      });
-    }
-
-    const diff = totalVndValue - totalVndValueYesterday;
-    const percent =
-      totalVndValueYesterday > 0 ? (diff / totalVndValueYesterday) * 100 : 0;
-
-    return {
-      totalVndValue,
-      totalVndValueYesterday,
-      dailyChangeVnd: diff,
-      dailyChangePercent: percent,
-      assets: summary.sort((a, b) => b.vndValue - a.vndValue),
-    };
-  }
-
-  async getStorageWallets(userId: string, assetSymbol?: string) {
-    return this.storageWalletRepository.find({
-      where: assetSymbol ? { userId, assetSymbol } : { userId },
-      relations: ['history'],
-      order: { createdAt: 'DESC' },
-    });
-  }
-
-  async createStorageWallet(userId: string, data: CreateStorageWalletDto) {
-    const stats = await this.getStats(userId, data.assetSymbol);
-    if (stats.balance < Number(data.quantity)) {
-      throw new BadRequestException(
-        'Số dư khả dụng không đủ để chuyển vào ví lưu trữ',
-      );
-    }
-
-    // Create withdrawal transaction
-    await this.createTransaction(userId, {
-      assetSymbol: data.assetSymbol,
-      type: TransactionType.WITHDRAW,
-      quantity: Number(data.quantity),
-      price: 0,
-      total: 0,
-      source: `Chuyển vào ví lưu trữ - ${data.platform}`,
-      status: 'locked',
-    });
-
-    const storageWallet = this.storageWalletRepository.create({
-      userId,
-      ...data,
-      initialQuantity: Number(data.quantity),
-      status: StorageWalletStatus.ACTIVE,
-    });
-
-    return this.storageWalletRepository.save(storageWallet);
-  }
-
-  async adjustStorageWallet(
-    userId: string,
-    storageId: string,
-    data: AdjustStorageWalletDto,
-  ) {
-    const wallet = await this.storageWalletRepository.findOne({
-      where: { id: storageId, userId, status: StorageWalletStatus.ACTIVE },
-    });
-
-    if (!wallet) {
-      throw new NotFoundException('Ví lưu trữ không tồn tại hoặc đã đóng');
-    }
-
-    const amount = Number(data.amount);
-    const oldQuantity = Number(wallet.quantity);
-    let newQuantity = oldQuantity;
-
-    if (data.type === StorageAdjustmentType.INCREASE) {
-      newQuantity += amount;
-    } else {
-      newQuantity -= amount;
-    }
-
-    wallet.quantity = newQuantity;
-    await this.storageWalletRepository.save(wallet);
-
-    const history = this.storageHistoryRepository.create({
-      storageWalletId: storageId,
-      type: data.type,
-      amount,
-      balanceAfter: newQuantity,
-      note: data.note,
-    });
-
-    await this.storageHistoryRepository.save(history);
-
-    return { success: true, newQuantity };
-  }
-
-  async getStorageHistory(userId: string, storageId: string) {
-    const wallet = await this.storageWalletRepository.findOne({
-      where: { id: storageId, userId },
-    });
-
-    if (!wallet) {
-      throw new NotFoundException('Ví lưu trữ không tồn tại');
-    }
-
-    return this.storageHistoryRepository.find({
-      where: { storageWalletId: storageId },
-      order: { createdAt: 'DESC' },
-    });
-  }
-
-  async updateInitialQuantity(
-    userId: string,
-    storageId: string,
-    initialQuantity: number,
-  ) {
-    const wallet = await this.storageWalletRepository.findOne({
-      where: { id: storageId, userId },
-    });
-
-    if (!wallet) {
-      throw new NotFoundException('Ví lưu trữ không tồn tại');
-    }
-
-    wallet.initialQuantity = Number(initialQuantity);
-    return this.storageWalletRepository.save(wallet);
-  }
-
-  async deleteStorageWallet(userId: string, storageId: string) {
-    const wallet = await this.storageWalletRepository.findOne({
-      where: { id: storageId, userId },
-    });
-
-    if (!wallet) {
-      throw new NotFoundException('Ví lưu trữ không tồn tại');
-    }
-
-    // Cascade delete handles history
-    return this.storageWalletRepository.remove(wallet);
-  }
-
-  async deleteStorageHistory(userId: string, historyId: string) {
-    const history = await this.storageHistoryRepository.findOne({
-      where: { id: historyId },
-      relations: ['storageWallet'],
-    });
-
-    if (!history || history.storageWallet.userId !== userId) {
-      throw new NotFoundException('Lịch sử không tồn tại');
-    }
-
-    // Optional: Recalculate wallet balance?
-    // For now, just delete the record as requested.
-    return this.storageHistoryRepository.remove(history);
-  }
-
-  async updateStorageHistory(
-    userId: string,
-    historyId: string,
-    data: { note?: string; amount?: number },
-  ) {
-    const history = await this.storageHistoryRepository.findOne({
-      where: { id: historyId },
-      relations: ['storageWallet'],
-    });
-
-    if (!history || history.storageWallet.userId !== userId) {
-      throw new NotFoundException('Lịch sử không tồn tại');
-    }
-
-    if (data.note !== undefined) history.note = data.note;
-    // Note: Updating amount is risky without recalculating balanceAfter.
-    // I'll stick to note for now or allow amount if user really wants it.
-    if (data.amount !== undefined) history.amount = Number(data.amount);
-
-    return this.storageHistoryRepository.save(history);
-  }
-
-  async withdrawFromStorage(userId: string, storageId: string) {
-    const wallet = await this.storageWalletRepository.findOne({
-      where: { id: storageId, userId, status: StorageWalletStatus.ACTIVE },
-    });
-
-    if (!wallet) {
-      throw new NotFoundException('Ví lưu trữ không tồn tại hoặc đã đóng');
-    }
-
-    const quantity = Number(wallet.quantity);
-
-    await this.storageWalletRepository.remove(wallet);
-
-    await this.createTransaction(userId, {
-      assetSymbol: wallet.assetSymbol,
-      type: TransactionType.RECEIVE,
-      quantity,
-      price: 0,
-      total: 0,
-      source: `Rút từ ví lưu trữ - ${wallet.platform}`,
-    });
-
-    return { success: true, quantity };
-  }
-
-  async clearAllWalletData(userId: string) {
-    // Delete all transactions
-    await this.walletTransactionRepository.delete({ userId });
-
-    // Delete all savings
-    await this.walletSavingsRepository.delete({ userId });
-
-    // Delete all storage history records first (to be safe if DB cascade is not set)
-    const wallets = await this.storageWalletRepository.find({
-      where: { userId },
-    });
-    const walletIds = wallets.map((w) => w.id);
-    if (walletIds.length > 0) {
-      await this.storageHistoryRepository
-        .createQueryBuilder()
-        .delete()
-        .where('storageWalletId IN (:...ids)', { ids: walletIds })
-        .execute();
-    }
-
-    // Delete all storage wallets
-    await this.storageWalletRepository.delete({ userId });
-
-    // Delete all wallet configs (passwords, etc)
-    await this.walletConfigRepository.delete({ userId });
-
-    return { success: true };
-  }
-
-  async importTransactions(userId: string, transactions: any[]) {
-    for (const tx of transactions) {
-      try {
-        const data: any = {
-          ...tx,
-          userId,
-          assetSymbol: tx.assetSymbol || tx.asset,
-          quantity: Number(tx.quantity) || 0,
-          price: Number(tx.price) || 0,
-          total: Number(tx.total) || 0,
-          timestamp: tx.timestamp ? new Date(tx.timestamp) : new Date(),
-        };
-        delete data.id;
-        delete data.asset;
-
-        const transaction = this.walletTransactionRepository.create(
-          data as DeepPartial<WalletTransaction>,
-        );
-        await this.walletTransactionRepository.save(transaction);
-      } catch (e) {
-        console.error('Error importing transaction:', e, tx);
-        throw e;
-      }
-    }
-    return { success: true, count: transactions.length };
-  }
-
-  async importSavings(userId: string, savings: any[]) {
-    for (const s of savings) {
-      try {
-        const data: any = {
-          ...s,
-          userId,
-          assetSymbol: s.assetSymbol || s.asset,
-          quantity: Number(s.quantity) || 0,
-          annualRate: Number(s.annualRate) || 0,
-          accruedInterest: Number(s.accruedInterest) || 0,
-          startDate: s.startDate ? new Date(s.startDate) : new Date(),
-          endDate: s.endDate ? new Date(s.endDate) : null,
-          lastInterestDate: s.lastInterestDate
-            ? new Date(s.lastInterestDate)
-            : new Date(),
-        };
-        delete data.id;
-        delete data.asset;
-
-        const saving = this.walletSavingsRepository.create(
-          data as DeepPartial<WalletSavings>,
-        );
-        await this.walletSavingsRepository.save(saving);
-      } catch (e) {
-        console.error('Error importing saving:', e, s);
-        throw e;
-      }
-    }
-    return { success: true, count: savings.length };
-  }
-
-  async importStorage(userId: string, storage: any[]) {
-    for (const s of storage) {
-      try {
-        const history = s.history;
-        const data: any = {
-          ...s,
-          userId,
-          assetSymbol: s.assetSymbol || s.asset,
-          initialQuantity: Number(s.initialQuantity) || 0,
-          quantity: Number(s.quantity) || 0,
-          createdAt: s.createdAt ? new Date(s.createdAt) : new Date(),
-        };
-        delete data.id;
-        delete data.asset;
-        delete data.history;
-
-        const wallet = this.storageWalletRepository.create(
-          data as DeepPartial<StorageWallet>,
-        );
-        const saved = await this.storageWalletRepository.save(wallet);
-
-        if (history && Array.isArray(history)) {
-          for (const h of history) {
-            const hData: any = {
-              ...h,
-              storageWalletId: (saved as any).id,
-              amount: Number(h.amount) || 0,
-              balanceAfter: Number(h.balanceAfter) || 0,
-              createdAt: h.createdAt ? new Date(h.createdAt) : new Date(),
-            };
-            delete hData.id;
-            const hist = this.storageHistoryRepository.create(
-              hData as DeepPartial<StorageHistory>,
-            );
-            await this.storageHistoryRepository.save(hist);
-          }
-        }
-      } catch (e) {
-        console.error('Error importing storage wallet:', e, s);
-        throw e;
-      }
-    }
-    return { success: true, count: storage.length };
-  }
-
-  async faucet(userId: string, assetSymbol: string) {
-    if (assetSymbol !== 'FZ' && assetSymbol !== 'VND') {
-      throw new BadRequestException('Faucet chỉ hỗ trợ FZ và VND (Triển khai nội bộ)');
-    }
-
-    return this.createTransaction(userId, {
-      assetSymbol,
-      type: TransactionType.DEPOSIT,
-      quantity: 1000,
-      price: assetSymbol === 'VND' ? 1 : 50000,
-      total: assetSymbol === 'VND' ? 1000 : 50000000,
-      source: 'Internal Faucet (Hệ thống cấp phát nội bộ)',
-      status: 'completed',
-    });
   }
 }

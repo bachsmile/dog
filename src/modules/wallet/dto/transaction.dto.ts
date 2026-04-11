@@ -35,6 +35,14 @@ export class CreateTransactionDto {
   @IsString()
   @IsOptional()
   status?: string;
+
+  @IsString()
+  @IsOptional()
+  contractCode?: string;
+
+  @IsString()
+  @IsOptional()
+  stakingTransactionId?: string;
 }
 
 export class UpdateTransactionDto {

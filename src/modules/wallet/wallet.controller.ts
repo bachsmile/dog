@@ -125,10 +125,60 @@ export class WalletController {
     return this.walletService.getStats(req.user.sub, assetSymbol);
   }
 
+  @Get('lots/:assetSymbol')
+  @UseGuards(WalletGuard)
+  async getLots(
+    @Request() req: AuthenticatedRequest,
+    @Param('assetSymbol') assetSymbol: string,
+  ) {
+    return this.walletService.getLots(req.user.sub, assetSymbol);
+  }
+
   @Get('portfolio/summary')
   @UseGuards(AuthGuard)
   async getPortfolioSummary(@Request() req: AuthenticatedRequest) {
     return this.walletService.getPortfolioSummary(req.user.sub);
+  }
+
+  @Get('growth-stats')
+  @UseGuards(AuthGuard)
+  async getGrowthStats(@Request() req: AuthenticatedRequest) {
+    return this.walletService.getGrowthStats(req.user.sub);
+  }
+
+  // Loans Endpoints
+  @Get('loans/:assetSymbol')
+  @UseGuards(WalletGuard)
+  async getLoans(
+    @Request() req: AuthenticatedRequest,
+    @Param('assetSymbol') assetSymbol: string,
+  ) {
+    return this.walletService.getLoans(req.user.sub, assetSymbol);
+  }
+
+  @Post('loans')
+  @UseGuards(WalletGuard)
+  async createLoan(
+    @Request() req: AuthenticatedRequest,
+    @Body() dto: {
+      assetSymbol: string;
+      borrower: string;
+      amount: number;
+      hasInterest: boolean;
+      interestRate: number;
+    },
+  ) {
+    return this.walletService.createLoan(req.user.sub, dto);
+  }
+
+  @Post('loans/:id/collect')
+  @UseGuards(WalletGuard)
+  async collectLoan(
+    @Request() req: AuthenticatedRequest,
+    @Param('id') id: string,
+    @Body() dto: { amount: number },
+  ) {
+    return this.walletService.collectLoan(req.user.sub, id, dto.amount);
   }
 
   // Savings Endpoints
@@ -242,7 +292,7 @@ export class WalletController {
     return this.walletService.getStorageHistory(req.user.sub, id);
   }
 
-  @Post('storage/:id/initial')
+  @Patch('storage/:id/initial')
   @UseGuards(AuthGuard)
   async patchInitialQuantity(
     @Request() req: AuthenticatedRequest,
