@@ -31,20 +31,13 @@ export class AuthService {
   async login(loginDto: LoginDto) {
     const { email, password } = loginDto;
 
-    // Find user and include password field
-    const user = await this.userRepository.findOne({
-      where: { email },
-      select: [
-        'id',
-        'email',
-        'password',
-        'role',
-        'displayName',
-        'status',
-        'modules',
-        'loginCount',
-      ],
-    });
+    // Find user by email or username (case-insensitive)
+    const normalizedIdentity = email.toLowerCase();
+    const user = await this.userRepository.createQueryBuilder('user')
+      .where('LOWER(user.email) = :identity', { identity: normalizedIdentity })
+      .orWhere('LOWER(user.username) = :identity', { identity: normalizedIdentity })
+      .addSelect('user.password')
+      .getOne();
 
     if (!user) {
       throw new UnauthorizedException('Invalid credentials');
@@ -83,7 +76,7 @@ export class AuthService {
         id: user.id,
         email: user.email,
         role: user.role,
-        displayName: user.displayName,
+        username: user.username,
         modules: user.modules || [],
         loginCount: user.loginCount,
       },
@@ -128,7 +121,7 @@ export class AuthService {
   }
 
   async register(registerDto: RegisterDto) {
-    const { email, password, role, displayName } = registerDto;
+    const { email, password, role, username } = registerDto;
 
     // Check if user already exists
     const existingUser = await this.userRepository.findOne({
@@ -145,7 +138,7 @@ export class AuthService {
       email,
       password: hashedPassword,
       role: role || Role.USER,
-      displayName,
+      username,
       status: registerDto.status || 'active',
       modules: registerDto.modules || [],
       loginCount: 0,
@@ -158,6 +151,7 @@ export class AuthService {
       user: {
         email: savedUser.email,
         role: savedUser.role,
+        username: savedUser.username,
         modules: savedUser.modules || [],
         loginCount: savedUser.loginCount,
       },

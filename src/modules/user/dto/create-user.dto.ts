@@ -4,7 +4,7 @@ export class CreateUserDto {
   email: string;
   password?: string;
   role?: Role;
-  displayName?: string;
+  username?: string;
   status?: 'active' | 'suspended';
   modules?: string[];
   subscriptionPlan?: string;

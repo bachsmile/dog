@@ -3,7 +3,7 @@ import { Role } from '../../../decorators/roles.decorator';
 export class RegisterDto {
   email: string;
   password: string;
-  displayName?: string;
+  username?: string;
   role?: Role;
   status?: 'active' | 'suspended';
   modules?: string[];

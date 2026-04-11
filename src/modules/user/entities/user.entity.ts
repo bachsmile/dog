@@ -18,8 +18,8 @@ export class User {
   @Column({ select: false }) // Don't return password by default
   password: string;
 
-  @Column({ nullable: true })
-  displayName: string;
+  @Column({ unique: true, nullable: true })
+  username: string;
 
   @Column({
     type: 'enum',
