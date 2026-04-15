@@ -31,6 +31,8 @@ import { LawSubmission } from './modules/law/entities/law-submission.entity';
 import { LicenseModule } from './modules/license/license.module';
 import { License } from './modules/license/entities/license.entity';
 import { GeminiModule } from './modules/gemini/gemini.module';
+import { WeddingModule } from './modules/wedding/wedding.module';
+import { WeddingOrder } from './modules/wedding/entities/wedding-order.entity';
 
 
 
@@ -60,6 +62,7 @@ import { GeminiModule } from './modules/gemini/gemini.module';
           LawApplication,
           LawSubmission,
           License,
+          WeddingOrder,
         ],
 
         autoLoadEntities: true,
@@ -85,6 +88,7 @@ import { GeminiModule } from './modules/gemini/gemini.module';
     LawChatModule,
     LicenseModule,
     GeminiModule,
+    WeddingModule,
   ],
 
 

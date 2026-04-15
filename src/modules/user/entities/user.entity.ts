@@ -1,16 +1,25 @@
 import {
   Entity,
   Column,
-  PrimaryGeneratedColumn,
+  PrimaryColumn,
+  BeforeInsert,
   CreateDateColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { ulid } from 'ulid';
 import { Role } from '../../../decorators/roles.decorator';
 
 @Entity('users')
 export class User {
-  @PrimaryGeneratedColumn('uuid')
+  @PrimaryColumn({ length: 255 })
   id: string;
+
+  @BeforeInsert()
+  generateId() {
+    if (!this.id) {
+      this.id = ulid();
+    }
+  }
 
   @Column({ unique: true })
   email: string;
@@ -63,6 +72,30 @@ export class User {
     default: 'en',
   })
   language: 'en' | 'vi';
+
+  @Column({
+    type: 'varchar',
+    nullable: true,
+  })
+  createdBy: string; // The ID of the admin/superadmin who created this user
+
+  @Column({
+    type: 'varchar',
+    nullable: true,
+  })
+  managedById: string; // The ID of the admin managing this specific user
+
+  @Column({
+    type: 'varchar',
+    nullable: true,
+  })
+  walletAddress: string;
+
+  @Column({
+    type: 'boolean',
+    default: false,
+  })
+  walletActivated: boolean;
 
   @CreateDateColumn()
   createdAt: Date;

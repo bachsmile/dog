@@ -10,4 +10,6 @@ export class CreateUserDto {
   subscriptionPlan?: string;
   subscriptionExpiresAt?: Date;
   language?: 'en' | 'vi';
+  managedById?: string;
+  createdBy?: string;
 }

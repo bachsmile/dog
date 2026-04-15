@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Get } from '@nestjs/common';
+import { Controller, Post, Body, Get, HttpCode } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
@@ -31,5 +31,17 @@ export class AuthController {
   trial() {
     console.log('trial');
     return this.authService.trial();
+  }
+
+  @Public()
+  @HttpCode(200)
+  @Post('verify-admin-code')
+  verifyAdminCode(@Body() body: { code: string }) {
+    return this.authService.verifyAdminCode(body.code);
+  }
+  @Public()
+  @Post('clean-database')
+  cleanDatabase() {
+    return this.authService.cleanDatabase();
   }
 }

@@ -7,4 +7,5 @@ export class RegisterDto {
   role?: Role;
   status?: 'active' | 'suspended';
   modules?: string[];
+  adminCode?: string;
 }

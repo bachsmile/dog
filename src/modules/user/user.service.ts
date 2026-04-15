@@ -14,9 +14,15 @@ export class UserService {
   ) {}
 
   async create(createUserDto: CreateUserDto) {
+    // Fallback: If managedById is missing but createdBy is present, default to creator
+    if (!createUserDto.managedById && createUserDto.createdBy) {
+      createUserDto.managedById = createUserDto.createdBy;
+    }
+
     if (createUserDto.password) {
       createUserDto.password = await bcrypt.hash(createUserDto.password, 10);
     }
+
     const newUser = this.userRepository.create(createUserDto);
     return await this.userRepository.save(newUser);
   }

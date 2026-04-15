@@ -19,6 +19,8 @@ import {
   SavingsStatus,
   SavingsType,
 } from './entities/wallet-savings.entity';
+import { WalletDeposit, DepositStatus } from './entities/wallet-deposit.entity';
+import { Wallet } from './entities/wallet.entity';
 import { CreateTransactionDto } from './dto/transaction.dto';
 import { CreateStorageWalletDto } from './dto/storage-wallet.dto';
 import { P2pService } from '../p2p/p2p.service';
@@ -32,6 +34,7 @@ import {
 } from './entities/storage-history.entity';
 import { AdjustStorageWalletDto } from './dto/adjust-storage.dto';
 import { SystemConfig } from './entities/system-config.entity';
+import { User } from '../user/entities/user.entity';
 
 interface CreateSavingsDto {
   assetSymbol: string;
@@ -52,6 +55,7 @@ interface WalletStatsEntry {
   savingsBalance: number;
   storageBalance?: number;
   totalBalance?: number;
+  frozenBalance?: number;
 }
 
 @Injectable()
@@ -59,6 +63,8 @@ export class WalletService {
   constructor(
     @InjectRepository(WalletConfig)
     private readonly walletConfigRepository: Repository<WalletConfig>,
+    @InjectRepository(User)
+    private readonly userRepository: Repository<User>,
     @InjectRepository(WalletTransaction)
     private readonly walletTransactionRepository: Repository<WalletTransaction>,
     @InjectRepository(WalletSavings)
@@ -69,6 +75,10 @@ export class WalletService {
     private readonly storageHistoryRepository: Repository<StorageHistory>,
     @InjectRepository(SystemConfig)
     private systemConfigRepository: Repository<SystemConfig>,
+    @InjectRepository(WalletDeposit)
+    private readonly walletDepositRepository: Repository<WalletDeposit>,
+    @InjectRepository(Wallet)
+    private readonly walletRepository: Repository<Wallet>,
     private readonly jwtService: JwtService,
     private readonly p2pService: P2pService,
   ) {}
@@ -137,18 +147,51 @@ export class WalletService {
     return { success: true, walletToken };
   }
 
+  async getOrCreateWallet(userId: string, assetSymbol: string): Promise<Wallet> {
+    let wallet = await this.walletRepository.findOne({
+      where: { userId, assetSymbol },
+    });
+
+    if (!wallet) {
+      // Find user to get if it's already activated
+      const user = await this.userRepository.findOne({ where: { id: userId } });
+      wallet = this.walletRepository.create({
+        userId,
+        assetSymbol,
+        address:
+          assetSymbol === 'VND'
+            ? undefined
+            : user?.walletAddress ||
+              '0x' +
+                Array.from({ length: 40 }, () =>
+                  Math.floor(Math.random() * 16).toString(16),
+                ).join(''),
+        balance: 0,
+        frozenBalance: 0,
+      });
+      wallet = await this.walletRepository.save(wallet);
+    }
+
+    return wallet;
+  }
+
   async getUnlockStatus(userId: string, assetSymbol: string) {
     const config = await this.walletConfigRepository.findOne({
       where: { userId, assetSymbol },
     });
 
-    const stats = await this.getStats(userId, assetSymbol);
+    const [stats, user] = await Promise.all([
+      this.getStats(userId, assetSymbol),
+      this.userRepository.findOne({ where: { id: userId } }),
+    ]);
 
     if (!config) {
       return {
         hasPassword: false,
         isUnlocked: false,
         stats,
+        walletActivated: user?.walletActivated || false,
+        walletAddress: user?.walletAddress || null,
       };
     }
 
@@ -162,6 +205,31 @@ export class WalletService {
       isUnlocked,
       unlockedUntil: config.unlockedUntil,
       stats,
+      walletActivated: user?.walletActivated || false,
+      walletAddress: user?.walletAddress || null,
+    };
+  }
+
+  async activateWallet(userId: string) {
+    const user = await this.userRepository.findOne({ where: { id: userId } });
+    if (!user) throw new NotFoundException('Người dùng không tồn tại');
+    if (user.walletActivated)
+      throw new BadRequestException('Ví đã được kích hoạt');
+
+    user.walletActivated = true;
+    user.walletAddress =
+      '0x' +
+      Array.from({ length: 40 }, () =>
+        Math.floor(Math.random() * 16).toString(16),
+      ).join('');
+    await this.userRepository.save(user);
+
+    // Also create/update the wallet record in wallets table (VND only)
+    await this.getOrCreateWallet(userId, 'VND');
+
+    return {
+      success: true,
+      walletAddress: user.walletAddress,
     };
   }
 
@@ -201,13 +269,30 @@ export class WalletService {
   }
 
   async createTransaction(userId: string, data: CreateTransactionDto) {
+    const wallet = await this.getOrCreateWallet(userId, data.assetSymbol);
+
     const transaction = this.walletTransactionRepository.create({
       userId,
+      walletId: wallet.id,
       ...data,
-      assetSymbol: data.assetSymbol, // Ensure symbol is mapped
+      assetSymbol: data.assetSymbol,
     });
 
     const saved = await this.walletTransactionRepository.save(transaction);
+
+    // Update Wallet Balance
+    if (data.status === 'completed') {
+      const qty = Number(data.quantity);
+      if (data.type === TransactionType.DEPOSIT || data.type === TransactionType.RECEIVE) {
+        wallet.balance = Number(wallet.balance) + qty;
+      } else if (data.type === TransactionType.WITHDRAW) {
+        wallet.balance = Number(wallet.balance) - qty;
+      }
+      await this.walletRepository.save(wallet);
+    } else if (data.status === 'frozen') {
+      wallet.frozenBalance = Number(wallet.frozenBalance) + Number(data.quantity);
+      await this.walletRepository.save(wallet);
+    }
 
     // Auto-create VND transaction for crypto sales/purchases
     if (data.assetSymbol !== 'VND') {
@@ -277,7 +362,12 @@ export class WalletService {
     if (data.profitAmount !== undefined)
       tx.profitAmount = Number(data.profitAmount);
 
-    return this.walletTransactionRepository.save(tx);
+    const saved = await this.walletTransactionRepository.save(tx);
+    
+    // Recalculate balance to be safe when updating
+    await this.syncWalletBalance(userId, assetSymbol);
+
+    return saved;
   }
 
 
@@ -296,7 +386,23 @@ export class WalletService {
     if (!tx) throw new NotFoundException('Giao dịch không tồn tại');
 
     await this.walletTransactionRepository.remove(tx);
+    
+    // Update balance after deletion
+    await this.syncWalletBalance(userId, assetSymbol);
+
     return { success: true };
+  }
+
+  async syncWalletBalance(userId: string, assetSymbol: string) {
+    const wallet = await this.getOrCreateWallet(userId, assetSymbol);
+    const statsMap = await this.calculateStatsMap(userId, assetSymbol);
+    const stats = statsMap[assetSymbol];
+    
+    if (stats) {
+      wallet.balance = stats.balance;
+      wallet.frozenBalance = stats.frozenBalance || 0;
+      await this.walletRepository.save(wallet);
+    }
   }
 
   private async calculateStatsMap(userId: string, symbol?: string) {
@@ -335,11 +441,15 @@ export class WalletService {
         source.startsWith('Rút từ ví lưu trữ');
 
       if (tx.type === TransactionType.DEPOSIT) {
-        entry.balance += quantity;
-        entry.totalInvested += Number(tx.total);
-        // Add to portfolio basis ONLY if it's a real new deposit/buy, not a return from savings
-        if (!isSavingsRelated) {
-          entry.totalInvestedPortfolio += Number(tx.total);
+        if (tx.status === 'frozen') {
+          entry.frozenBalance = (entry.frozenBalance || 0) + quantity;
+        } else {
+          entry.balance += quantity;
+          entry.totalInvested += Number(tx.total);
+          // Add to portfolio basis ONLY if it's a real new deposit/buy, not a return from savings
+          if (!isSavingsRelated) {
+            entry.totalInvestedPortfolio += Number(tx.total);
+          }
         }
       } else if (tx.type === TransactionType.RECEIVE) {
         // Savings interest is compounded directly into s.quantity (savingsBalance),
@@ -357,6 +467,8 @@ export class WalletService {
           entry.totalInvestedPortfolio -= quantity * avgPrice;
           entry.totalInvested -= quantity * avgPrice;
         }
+      } else if (tx.status === 'frozen' && tx.type !== TransactionType.DEPOSIT) {
+        entry.frozenBalance = (entry.frozenBalance || 0) + quantity;
       }
     }
 
@@ -791,22 +903,34 @@ export class WalletService {
   }
 
   async getStats(userId: string, assetSymbol: string) {
-    const statsMap = await this.calculateStatsMap(userId, assetSymbol);
-    const stats: WalletStatsEntry = statsMap[assetSymbol] || {
-      balance: 0,
-      receivedBalance: 0,
-      totalInvested: 0,
-      totalInvestedPortfolio: 0,
-      savingsBalance: 0,
-    };
+    const user = await this.userRepository.findOne({ where: { id: userId } });
+    let wallet = await this.walletRepository.findOne({
+      where: { userId, assetSymbol },
+    });
 
-    if (stats.balance < 0) stats.balance = 0;
-    if (stats.totalInvested < 0) stats.totalInvested = 0;
-    if (stats.totalInvestedPortfolio < 0) stats.totalInvestedPortfolio = 0;
-
+    if (!wallet) {
+      // If not activated and no wallet record exists, just return 0 without creating one
+      if (!user?.walletActivated) {
+        return {
+          assetSymbol,
+          balance: 0,
+          frozenBalance: 0,
+          totalInvested: 0,
+          totalInvestedPortfolio: 0,
+        };
+      }
+      wallet = await this.getOrCreateWallet(userId, assetSymbol);
+    }
+    
     return {
       assetSymbol,
-      ...stats,
+      id: wallet.id,
+      address: wallet.address,
+      balance: Number(wallet.balance),
+      frozenBalance: Number(wallet.frozenBalance),
+      // Include other calculated stats legacy support
+      totalInvested: 0,
+      totalInvestedPortfolio: 0,
     };
   }
 
@@ -815,6 +939,7 @@ export class WalletService {
 
     const summary: {
       symbol: string;
+      adminNote?: string;
       balance: number;
       savingsBalance: number;
       storageBalance: number;
@@ -1202,5 +1327,105 @@ export class WalletService {
       source: 'Internal Faucet (Hệ thống cấp phát nội bộ)',
       status: 'completed',
     });
+  }
+
+  async createDeposit(
+    userId: string,
+    data: { amount: number; proofImage: string; note?: string },
+  ) {
+    const deposit = this.walletDepositRepository.create({
+      userId,
+      amount: data.amount,
+      proofImage: data.proofImage,
+      note: data.note,
+      status: DepositStatus.PENDING,
+    });
+
+    const saved = await this.walletDepositRepository.save(deposit);
+
+    // Create a frozen transaction
+    await this.createTransaction(userId, {
+      assetSymbol: 'VND',
+      type: TransactionType.DEPOSIT,
+      quantity: data.amount,
+      price: 1,
+      total: data.amount,
+      source: `Nạp tiền qua chuyển khoản (Đang duyệt) - ID: ${saved.id}`,
+      status: 'frozen',
+    });
+
+    return saved;
+  }
+
+  async getPendingDeposits() {
+    return this.walletDepositRepository.find({
+      where: { status: DepositStatus.PENDING },
+      relations: ['user'],
+      order: { createdAt: 'DESC' },
+    });
+  }
+
+  async approveDeposit(depositId: string, adminNote?: string) {
+    const deposit = await this.walletDepositRepository.findOne({
+      where: { id: depositId },
+    });
+    if (!deposit) throw new NotFoundException('Yêu cầu nạp tiền không tồn tại');
+    if (deposit.status !== DepositStatus.PENDING)
+      throw new BadRequestException('Yêu cầu này đã được xử lý');
+
+    deposit.status = DepositStatus.APPROVED;
+    deposit.adminNote = adminNote ?? '';
+    await this.walletDepositRepository.save(deposit);
+
+    // Update the frozen transaction to completed
+    const tx = await this.walletTransactionRepository.findOne({
+      where: {
+        userId: deposit.userId,
+        assetSymbol: 'VND',
+        quantity: deposit.amount,
+        status: 'frozen',
+      },
+    });
+
+    if (tx) {
+      tx.status = 'completed';
+      tx.source = `Nạp tiền qua chuyển khoản (Đã duyệt) - ID: ${deposit.id}`;
+      await this.walletTransactionRepository.save(tx);
+    }
+
+    // CRITICAL: Sync balance to move funds from frozen to available
+    await this.syncWalletBalance(deposit.userId, 'VND');
+
+    return { success: true };
+  }
+
+  async rejectDeposit(depositId: string, adminNote?: string) {
+    const deposit = await this.walletDepositRepository.findOne({
+      where: { id: depositId },
+    });
+    if (!deposit) throw new NotFoundException('Yêu cầu nạp tiền không tồn tại');
+
+    deposit.status = DepositStatus.REJECTED;
+    deposit.adminNote = adminNote ?? '';
+    await this.walletDepositRepository.save(deposit);
+
+    // Delete the frozen transaction
+    const tx = await this.walletTransactionRepository.findOne({
+      where: {
+        userId: deposit.userId,
+        assetSymbol: 'VND',
+        quantity: deposit.amount,
+        status: 'frozen',
+      },
+    });
+
+    if (tx) {
+      await this.walletTransactionRepository.remove(tx);
+    }
+
+    // CRITICAL: Sync balance to remove frozen funds
+    await this.syncWalletBalance(deposit.userId, 'VND');
+
+    return { success: true };
   }
 }

@@ -29,6 +29,12 @@ interface AuthenticatedRequest extends Request {
 export class WalletController {
   constructor(private readonly walletService: WalletService) {}
 
+  @Post('activate')
+  @UseGuards(AuthGuard)
+  async activate(@Request() req: AuthenticatedRequest) {
+    return this.walletService.activateWallet(req.user.sub);
+  }
+
   @Get('system-config/:key')
   async getSystemConfig(@Param('key') key: string) {
     const value = await this.walletService.getSystemValue(key);
@@ -327,5 +333,38 @@ export class WalletController {
     @Body() dto: { assetSymbol: string },
   ) {
     return this.walletService.faucet(req.user.sub, dto.assetSymbol);
+  }
+
+  @Post('deposit')
+  @UseGuards(AuthGuard)
+  async createDeposit(
+    @Request() req: AuthenticatedRequest,
+    @Body() dto: { amount: number; proofImage: string; note?: string },
+  ) {
+    return this.walletService.createDeposit(req.user.sub, dto);
+  }
+
+  @Get('deposits/pending')
+  @UseGuards(AuthGuard)
+  async getPendingDeposits() {
+    return this.walletService.getPendingDeposits();
+  }
+
+  @Post('deposits/:id/approve')
+  @UseGuards(AuthGuard)
+  async approveDeposit(
+    @Param('id') id: string,
+    @Body() dto: { adminNote?: string },
+  ) {
+    return this.walletService.approveDeposit(id, dto.adminNote);
+  }
+
+  @Post('deposits/:id/reject')
+  @UseGuards(AuthGuard)
+  async rejectDeposit(
+    @Param('id') id: string,
+    @Body() dto: { adminNote?: string },
+  ) {
+    return this.walletService.rejectDeposit(id, dto.adminNote);
   }
 }

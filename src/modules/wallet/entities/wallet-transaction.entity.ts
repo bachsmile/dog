@@ -20,6 +20,9 @@ export class WalletTransaction {
   @Column()
   userId: string;
 
+  @Column({ nullable: true })
+  walletId: string;
+
   @Column()
   assetSymbol: string;
 

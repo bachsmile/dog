@@ -8,6 +8,9 @@ import { WalletTransaction } from './entities/wallet-transaction.entity';
 import { StorageWallet } from './entities/storage-wallet.entity';
 import { StorageHistory } from './entities/storage-history.entity';
 import { SystemConfig } from './entities/system-config.entity';
+import { WalletDeposit } from './entities/wallet-deposit.entity';
+import { Wallet } from './entities/wallet.entity';
+import { User } from '../user/entities/user.entity';
 import { P2pModule } from '../p2p/p2p.module';
 
 @Module({
@@ -19,6 +22,9 @@ import { P2pModule } from '../p2p/p2p.module';
       StorageWallet,
       StorageHistory,
       SystemConfig,
+      WalletDeposit,
+      Wallet,
+      User,
     ]),
     P2pModule,
   ],
